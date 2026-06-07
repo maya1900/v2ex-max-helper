@@ -1,0 +1,20 @@
+# V2EX Max Helper 配置示例
+# 复制本文件到家目录并重命名为 .v2ex_env（即 ~/.v2ex_env），然后填入你自己的值。
+#   cp .v2ex_env.example ~/.v2ex_env
+# 脚本会自动从 ~/.v2ex_env 读取以下变量（环境变量优先级更高）。
+
+# ===== Telegram 推送 / Bot =====
+# 向 @BotFather 申请的 Bot Token
+TG_TOKEN=<在此填入你的BotToken>
+# 你的 Telegram 数字 Chat ID（向 @userinfobot 发消息可获取）
+# Bot 只会响应该 Chat ID 的命令（硬锁）
+TG_CHAT_ID=<在此填入你的Chat_ID>
+
+# 签到脚本（v2ex-checkin.js）使用的 Telegram 变量名（与上面任选其一配置即可）
+TG_BOT_TOKEN=<在此填入你的BotToken>
+
+# ===== Bark 推送（可选，仅签到脚本支持）=====
+# BARK_URL=https://api.day.app/你的KEY
+
+# ===== 阅读脚本日志路径（bot.js 的 /debug 命令读取，可选）=====
+# READER_LOG=/var/log/v2ex-reader.log
