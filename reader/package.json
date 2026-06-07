@@ -1,0 +1,15 @@
+{
+  "name": "v2ex-max-helper-reader",
+  "version": "1.0.0",
+  "description": "V2EX 自动阅读活跃度脚本 - Playwright + SQLite",
+  "main": "main.js",
+  "scripts": {
+    "start":   "node main.js",
+    "dry-run": "node main.js --dry-run",
+    "bot":     "node bot.js"
+  },
+  "dependencies": {
+    "playwright": "^1.44.0",
+    "sql.js":     "^1.10.0"
+  }
+}
