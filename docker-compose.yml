@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  v2ex-bot:
+    build: .
+    container_name: v2ex-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - v2ex-data:/data
+    # 也可以挂载宿主机的目录，比如:
+    # - ./data:/data
+    environment:
+      - TZ=UTC # Cron 默认为 UTC，保持一致
+
+volumes:
+  v2ex-data:

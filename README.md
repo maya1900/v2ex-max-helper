@@ -309,3 +309,22 @@ rm -f ~/.v2ex_cookie ~/.v2ex_env
 - ©️ 须保留原作者署名并标明改动。
 
 > 注：因含「禁止商用」条款，本许可证非 OSI 认证的开源许可证，仅限个人、学习与非商业自动化使用。
+
+
+## 🐳 Docker 一键部署 (Beta)
+
+本项目现已支持 Docker 部署。只需要简单两步即可运行，免去环境配置的麻烦，彻底解决 Headless 无头浏览器检测问题：
+
+1. 准备配置文件
+   \\\ash
+   cp .v2ex_env.example .env
+   # 编辑 .env 文件，填入你的 TG_TOKEN 和 TG_CHAT_ID
+   \\\
+
+2. 启动容器
+   \\\ash
+   docker compose up -d
+   \\\
+
+启动后，在 Telegram 给你的 Bot 发送包含 V2EX Cookie 的文字即可完成配置，定时任务会在每天后台自动运行！
+

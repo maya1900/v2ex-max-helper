@@ -5,6 +5,7 @@
 //   /sou   — 今日最后一次余额查询 & 昨日余额
 //   /debug — 最新报错（日志末尾 ERROR/WARN 行）
 //   /stop  — 停止正在运行的阅读脚本
+//   直接粘贴 Cookie — 智能识别并导入
 //
 // 配置（环境变量或 ~/.v2ex_env 文件）：
 //   TG_TOKEN    — Telegram Bot Token
@@ -33,6 +34,24 @@ const ALLOWED_CHAT_ID = process.env.TG_CHAT_ID || '';   // 硬锁，唯一授权
 const LOCK_FILE       = path.join(os.tmpdir(), 'v2ex_reader.lock');
 const BALANCE_LOG     = path.join(__dirname, 'data', 'balance_log.json');
 const READER_LOG      = process.env.READER_LOG || '/var/log/v2ex-reader.log';
+
+// Cookie 文件路径（与 browser.js / v2ex-checkin.js 保持一致）
+const PROFILE     = (process.env.V2EX_PROFILE || 'default').trim() || 'default';
+const COOKIE_FILE = process.env.COOKIE_FILE
+  || (PROFILE === 'default'
+      ? path.join(os.homedir(), '.v2ex_cookie')
+      : path.join(os.homedir(), `.v2ex_cookie.${PROFILE}`));
+
+// V2EX 关键 Cookie 字段白名单（按重要性排列）
+const V2EX_COOKIE_KEYS = [
+  'A2',              // 🔴 登录态核心 token
+  'PB3_SESSION',     // 🟡 会话 session
+  'cf_clearance',    // 🟡 Cloudflare 验证
+  'V2EX_REFERRER',   // 🟢 来源追踪
+  'A2O',             // 🟢 辅助登录态
+  '_ga',             // ⚪ Google Analytics
+  '_gid',            // ⚪ Google Analytics
+];
 
 if (!TOKEN)           { console.error('TG_TOKEN 未设置'); process.exit(1); }
 if (!ALLOWED_CHAT_ID) { console.error('TG_CHAT_ID 未设置'); process.exit(1); }
@@ -151,6 +170,142 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// ========== Cookie 智能识别导入 ==========
+
+// 从任意文本中提取 V2EX 关键 Cookie 字段
+// 返回 { found: Map<name, value>, missing: string[] } 或 null（未找到 A2）
+function extractCookie(text) {
+  const found = new Map();
+
+  for (const key of V2EX_COOKIE_KEYS) {
+    const re = new RegExp(
+      key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+      '=("[^"]*"|[^;\\s\\n]+)',
+      'g'
+    );
+
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      let value = match[1].trim();
+      // 去除尾部可能粘上的分号
+      if (value.endsWith(';')) value = value.slice(0, -1);
+      // 保留引号内容
+      if (value) found.set(key, value);
+    }
+  }
+
+  // A2 是必需字段
+  if (!found.has('A2')) return null;
+
+  const missing = V2EX_COOKIE_KEYS.slice(0, 3).filter(k => !found.has(k));
+  return { found, missing };
+}
+
+// 用 Cookie 请求 V2EX 首页，检查登录状态
+function verifyCookie(cookieStr) {
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'www.v2ex.com',
+      path: '/',
+      method: 'GET',
+      headers: {
+        'Cookie': cookieStr,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        const loggedIn = !body.includes('你要查看的页面需要先登录') &&
+                         !body.includes('需要先登录') &&
+                         (body.includes('/notifications') || body.includes('/member/'));
+        resolve(loggedIn);
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(15000, () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
+
+// 处理 Cookie 导入
+async function handleCookieImport(text) {
+  const result = extractCookie(text);
+  if (!result) return false;
+
+  const { found, missing } = result;
+
+  // 与旧 Cookie 合并
+  let oldCookieMap = new Map();
+  try {
+    if (fs.existsSync(COOKIE_FILE)) {
+      const oldStr = fs.readFileSync(COOKIE_FILE, 'utf8').trim();
+      for (const part of oldStr.split(';')) {
+        const s = part.trim();
+        if (!s) continue;
+        const i = s.indexOf('=');
+        if (i < 0) continue;
+        oldCookieMap.set(s.slice(0, i).trim(), s.slice(i + 1).trim());
+      }
+    }
+  } catch (_) {}
+
+  // 新值覆盖旧值
+  for (const [k, v] of found) {
+    oldCookieMap.set(k, v);
+  }
+
+  // 组装最终 Cookie 字符串
+  const finalCookie = Array.from(oldCookieMap.entries())
+    .map(([k, v]) => `${k}=${v}`)
+    .join('; ');
+
+  // 写入文件
+  try {
+    fs.writeFileSync(COOKIE_FILE, finalCookie, { mode: 0o600 });
+  } catch (e) {
+    await sendMsg(`❌ Cookie 写入失败: ${e.message}`);
+    return true;
+  }
+
+  // 构建识别结果消息
+  const fieldLines = [];
+  for (const key of V2EX_COOKIE_KEYS) {
+    if (found.has(key)) {
+      const label = key === 'A2' ? '登录态' :
+                    key === 'PB3_SESSION' ? '会话' :
+                    key === 'cf_clearance' ? 'CF验证' :
+                    key === 'V2EX_REFERRER' ? '来源' :
+                    key === 'A2O' ? '辅助登录' : 'Analytics';
+      fieldLines.push(`  ✅ ${key}（${label}）`);
+    }
+  }
+  if (missing.length > 0) {
+    for (const key of missing) {
+      fieldLines.push(`  ⚠️ ${key}（未提供，已保留旧值）`);
+    }
+  }
+
+  await sendMsg(
+    `🍪 <b>Cookie 已更新</b>\n\n` +
+    `识别到以下字段：\n${fieldLines.join('\n')}\n\n` +
+    `⏳ 正在验证有效性...`
+  );
+
+  console.log('[BOT] 验证 Cookie 有效性...');
+  const valid = await verifyCookie(finalCookie);
+  if (valid) {
+    await sendMsg('✅ Cookie 验证通过，登录态正常');
+    console.log('[BOT] Cookie 验证通过');
+  } else {
+    await sendMsg('⚠️ Cookie 已保存，但验证未通过（可能已过期或 CF 拦截）\n请确认 Cookie 是最新的');
+    console.log('[BOT] Cookie 验证未通过');
+  }
+
+  return true;
+}
+
 // ========== 长轮询主循环 ==========
 let offset = 0;
 
@@ -170,14 +325,23 @@ async function poll() {
         continue;
       }
 
-      const cmd = msg.text.trim().split(/\s+/)[0].toLowerCase();
-      console.log(`[BOT] 收到命令: ${cmd}`);
+      const text = msg.text.trim();
+      const cmd = text.split(/\s+/)[0].toLowerCase();
+      console.log(`[BOT] 收到消息: ${cmd}`);
 
       try {
         if      (cmd === '/sou')   await handleSou();
         else if (cmd === '/debug') await handleDebug();
         else if (cmd === '/stop')  await handleStop();
-        else await sendMsg('可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本');
+        else if (cmd.startsWith('/')) {
+          await sendMsg('可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n\n💡 直接粘贴 Cookie 文本即可自动识别导入');
+        } else {
+          // 非命令消息：尝试智能识别 Cookie
+          const handled = await handleCookieImport(text);
+          if (!handled) {
+            console.log('[BOT] 未识别到有效 Cookie，忽略');
+          }
+        }
       } catch (e) {
         console.error(`[BOT] 命令处理出错: ${e.message}`);
       }
@@ -201,7 +365,7 @@ console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`
   } catch (_) {}
 
   // 通知已启动
-  await sendMsg('🤖 Bot 已上线，可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本');
+  await sendMsg('🤖 Bot 已上线，可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n\n💡 直接粘贴 Cookie 文本即可自动识别导入');
 
   while (true) {
     await poll();
