@@ -81,7 +81,13 @@ async function launch(dryRun = false) {
   logger.info('浏览器启动中...');
   logger.info('浏览器指纹已按当前 profile 注入');
 
-  ctx = await chromium.launchPersistentContext(USER_DATA_DIR, {
+  // 动态代理检测：如果环境变量设置了代理，或者通过 --require 加载了 preload-proxy.js，则启用代理
+  let proxyServer = process.env.HTTP_PROXY || process.env.http_proxy || '';
+  if (!proxyServer && require.cache[path.resolve(__dirname, 'preload-proxy.js')]) {
+    proxyServer = 'http://127.0.0.1:7890';
+  }
+
+  const launchOptions = {
     headless: false,
     args: [
       '--disable-blink-features=AutomationControlled',
@@ -100,7 +106,14 @@ async function launch(dryRun = false) {
     extraHTTPHeaders: {
       'Accept-Language': FP.acceptLanguage,
     },
-  });
+  };
+
+  if (proxyServer) {
+    launchOptions.proxy = { server: proxyServer };
+    logger.info(`浏览器启用代理: ${proxyServer}`);
+  }
+
+  ctx = await chromium.launchPersistentContext(USER_DATA_DIR, launchOptions);
 
   // 注入指纹隔离脚本（webdriver 隐藏 + navigator/WebGL 伪装）
   await ctx.addInitScript(fingerprint.buildInitScript(FP), {

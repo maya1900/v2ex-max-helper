@@ -542,6 +542,20 @@ console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`
     } catch (_) {}
   }
 
+  // 从环境变量 V2EX_COOKIE 初始化 Cookie 文件 (用于 Render 等临时容器持久化)
+  if (process.env.V2EX_COOKIE && !fs.existsSync(COOKIE_FILE)) {
+    try {
+      const cookieDir = path.dirname(COOKIE_FILE);
+      if (!fs.existsSync(cookieDir)) {
+        fs.mkdirSync(cookieDir, { recursive: true });
+      }
+      fs.writeFileSync(COOKIE_FILE, process.env.V2EX_COOKIE.trim(), { mode: 0o600 });
+      console.log('[BOT] 从环境变量 V2EX_COOKIE 初始化 Cookie 文件成功');
+    } catch (e) {
+      console.error(`[BOT] 从环境变量 V2EX_COOKIE 初始化 Cookie 失败: ${e.message}`);
+    }
+  }
+
   // 跳过历史消息（offset 设为最新，带重试）
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
