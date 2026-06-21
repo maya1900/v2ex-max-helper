@@ -13,9 +13,11 @@
 //   READER_LOG  — 阅读脚本日志路径（默认 /var/log/v2ex-reader.log）
 
 const https  = require('https');
+const http   = require('http');
 const fs     = require('fs');
 const path   = require('path');
 const os     = require('os');
+const { spawn } = require('child_process');
 
 // ========== 加载配置 ==========
 // 从 ~/.v2ex_env 加载键值对到 process.env（不覆盖已有变量）
@@ -62,7 +64,7 @@ function maskId(id) {
   return `${s.slice(0, 2)}***${s.slice(-2)}`;
 }
 
-// ========== Telegram API ==========
+// ========== Telegram API（含重启容错）==========
 function tgRequest(method, params) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(params);
@@ -75,7 +77,16 @@ function tgRequest(method, params) {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch { resolve({}); }
+        try {
+          const parsed = JSON.parse(data);
+          // 处理 Telegram 409 冲突（上一个实例的长轮询还没断开）
+          if (res.statusCode === 409) {
+            console.warn('[BOT] Telegram 409 冲突，上一个实例连接未断开，1秒后重试...');
+            resolve({ ok: false, conflict: true });
+            return;
+          }
+          resolve(parsed);
+        } catch { resolve({}); }
       });
     });
     req.on('error', reject);
@@ -261,6 +272,12 @@ async function handleCookieImport(text) {
     .map(([k, v]) => `${k}=${v}`)
     .join('; ');
 
+  // 确保目录存在
+  const cookieDir = path.dirname(COOKIE_FILE);
+  if (!fs.existsSync(cookieDir)) {
+    fs.mkdirSync(cookieDir, { recursive: true });
+  }
+
   // 写入文件
   try {
     fs.writeFileSync(COOKIE_FILE, finalCookie, { mode: 0o600 });
@@ -306,12 +323,163 @@ async function handleCookieImport(text) {
   return true;
 }
 
-// ========== 长轮询主循环 ==========
+// ========== 内置调度器（替代 Docker cron，Render 友好）==========
+
+let runningTask = null; // 防止任务重叠
+
+function runScript(name, command, args, cwd) {
+  if (runningTask) {
+    console.log(`[调度器] 跳过 ${name}，上一个任务 ${runningTask} 还在运行`);
+    return;
+  }
+
+  // 检查 Cookie 文件是否存在（无 cookie 时跳过，不崩溃）
+  if (!fs.existsSync(COOKIE_FILE)) {
+    console.log(`[调度器] 跳过 ${name}，Cookie 文件不存在，请先通过 TG 导入`);
+    return;
+  }
+
+  console.log(`[调度器] 启动 ${name}`);
+  runningTask = name;
+
+  const child = spawn(command, args, {
+    cwd,
+    env: { ...process.env }, // 继承所有环境变量
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', d => {
+    const lines = d.toString().trim();
+    if (lines) console.log(`[${name}] ${lines}`);
+  });
+  child.stderr.on('data', d => {
+    const lines = d.toString().trim();
+    if (lines) console.error(`[${name}] ${lines}`);
+  });
+
+  child.on('close', (code) => {
+    console.log(`[调度器] ${name} 退出 (code ${code})`);
+    runningTask = null;
+  });
+
+  child.on('error', (err) => {
+    console.error(`[调度器] ${name} 启动失败: ${err.message}`);
+    runningTask = null;
+  });
+}
+
+function startScheduler() {
+  // 用 day-of-year 防止同一天重复执行
+  let lastCheckinDOY = -1;
+  let lastReadDOY = -1;
+
+  setInterval(() => {
+    const now = new Date();
+    const h = now.getUTCHours();
+    const m = now.getUTCMinutes();
+    // day-of-year 唯一标识每天
+    const doy = Math.floor((now - new Date(now.getUTCFullYear(), 0, 0)) / 86400000);
+
+    // 每天 UTC 01:10 签到（当天只执行一次）
+    if (h === 1 && m === 10 && doy !== lastCheckinDOY) {
+      lastCheckinDOY = doy;
+      runScript('签到', process.execPath, ['../checkin/v2ex-checkin.js'], __dirname);
+    }
+
+    // 每天 UTC 01:15 阅读（当天只执行一次）
+    if (h === 1 && m === 15 && doy !== lastReadDOY) {
+      lastReadDOY = doy;
+      // Render 环境下直接 node，VPS Docker 里可以用 xvfb-run
+      const hasXvfb = fs.existsSync('/usr/bin/xvfb-run');
+      if (hasXvfb) {
+        runScript('阅读', '/usr/bin/xvfb-run', ['-a', process.execPath, 'main.js'], __dirname);
+      } else {
+        runScript('阅读', process.execPath, ['main.js'], __dirname);
+      }
+    }
+
+    // 每 6 小时保活（V2EX session 保活，非 Render 保活）
+    if ([0, 6, 12, 18].includes(h) && m === 0) {
+      runScript('保活', process.execPath, ['../checkin/v2ex-checkin.js', '--ping'], __dirname);
+    }
+  }, 60 * 1000); // 每分钟检查一次
+
+  console.log('[调度器] 内置定时任务已启动 (UTC 时钟)');
+}
+
+// ========== 铁墙 HTTP 服务器（满足 Render 端口要求 + 防扫描）==========
+
+function startHttpWall() {
+  const RENDER_PORT = process.env.PORT || 10000;
+
+  const server = http.createServer((req, res) => {
+    // 安全头
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Security-Policy', "default-src 'none'");
+
+    // 唯一允许的路径
+    if (req.method === 'GET' && req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('OK');
+      return;
+    }
+
+    // 一切其他请求：404
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  });
+
+  server.maxHeadersCount = 20;
+  server.headersTimeout = 5000;
+  server.requestTimeout = 5000;
+
+  server.listen(RENDER_PORT, () => {
+    console.log(`[HTTP] 铁墙服务器已启动 (端口 ${RENDER_PORT})`);
+  });
+}
+
+// ========== 自保活（防 Render 15 分钟休眠）==========
+
+function startKeepAlive() {
+  const extUrl = process.env.RENDER_EXTERNAL_URL;
+  if (!extUrl) {
+    console.log('[KEEP-ALIVE] 未检测到 RENDER_EXTERNAL_URL，跳过自保活（非 Render 环境）');
+    return;
+  }
+
+  setInterval(() => {
+    https.get(extUrl, (res) => {
+      res.resume(); // 读完响应，不处理
+    }).on('error', () => {
+      // 保活 ping 失败不影响主流程
+    });
+  }, 10 * 60 * 1000); // 每 10 分钟
+
+  console.log(`[KEEP-ALIVE] 自保活已启用，每 10 分钟 ping ${extUrl}`);
+}
+
+// ========== 长轮询主循环（含重启容错）==========
 let offset = 0;
+let pollRetryDelay = 1000; // 初始重试间隔 1 秒
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function poll() {
   try {
     const res = await tgRequest('getUpdates', { offset, timeout: 30, allowed_updates: ['message'] });
+
+    // 处理 409 冲突（Render 重启后上一个实例的连接还没断）
+    if (res.conflict) {
+      await sleep(pollRetryDelay);
+      pollRetryDelay = Math.min(pollRetryDelay * 2, 10000); // 指数退避，最多 10 秒
+      return;
+    }
+
+    // 成功后重置重试间隔
+    pollRetryDelay = 1000;
+
     if (!res.ok || !res.result) return;
 
     for (const update of res.result) {
@@ -348,25 +516,70 @@ async function poll() {
     }
   } catch (e) {
     if (e.message !== 'timeout') {
-      console.error(`[BOT] 轮询出错: ${e.message}`);
+      console.error(`[BOT] 轮询出错: ${e.message}，${pollRetryDelay / 1000}秒后重试`);
+      await sleep(pollRetryDelay);
+      pollRetryDelay = Math.min(pollRetryDelay * 2, 30000); // 网络错误最多等 30 秒
     }
   }
 }
 
-// 主循环
+// ========== 主启动逻辑（含重启恢复）==========
 console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`);
+
 (async () => {
-  // 先清空历史消息（offset 设为最新）
-  try {
-    const init = await tgRequest('getUpdates', { offset: -1, timeout: 0 });
-    if (init.ok && init.result.length > 0) {
-      offset = init.result[init.result.length - 1].update_id + 1;
+  // 启动铁墙 HTTP 服务器（必须在轮询之前，否则 Render 判定启动失败）
+  startHttpWall();
+
+  // 清除残留锁文件（重启后旧 PID 已无效）
+  if (fs.existsSync(LOCK_FILE)) {
+    try {
+      const oldPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+      try { process.kill(oldPid, 0); } catch (_) {
+        // 旧进程已不存在，安全删除锁文件
+        fs.unlinkSync(LOCK_FILE);
+        console.log('[BOT] 已清除残留锁文件');
+      }
+    } catch (_) {}
+  }
+
+  // 跳过历史消息（offset 设为最新，带重试）
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const init = await tgRequest('getUpdates', { offset: -1, timeout: 0 });
+      if (init.conflict) {
+        console.log(`[BOT] 初始化遇到 409 冲突，${attempt + 1}/5 次重试...`);
+        await sleep(2000 * (attempt + 1));
+        continue;
+      }
+      if (init.ok && init.result.length > 0) {
+        offset = init.result[init.result.length - 1].update_id + 1;
+      }
+      break;
+    } catch (e) {
+      console.error(`[BOT] 初始化失败: ${e.message}，重试中...`);
+      await sleep(2000 * (attempt + 1));
     }
-  } catch (_) {}
+  }
 
-  // 通知已启动
-  await sendMsg('🤖 Bot 已上线，可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n\n💡 直接粘贴 Cookie 文本即可自动识别导入');
+  // 检查 Cookie 状态，构建启动消息
+  const hasCookie = fs.existsSync(COOKIE_FILE);
+  let startupMsg = '🤖 Bot 已上线';
+  if (!hasCookie) {
+    startupMsg += '\n\n⚠️ 未检测到 Cookie 文件\n💡 请直接粘贴 Cookie 文本，Bot 会自动识别导入';
+  } else {
+    startupMsg += '\n✅ Cookie 文件已就绪';
+  }
+  startupMsg += '\n\n可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本';
 
+  await sendMsg(startupMsg);
+
+  // 启动内置调度器
+  startScheduler();
+
+  // 启动自保活
+  startKeepAlive();
+
+  // 主轮询循环（永不退出）
   while (true) {
     await poll();
   }

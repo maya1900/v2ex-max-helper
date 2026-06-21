@@ -1,18 +1,34 @@
-version: '3.8'
-
 services:
   v2ex-bot:
-    build: .
+    image: ghcr.io/mskatoni/v2ex-max-helper:latest
     container_name: v2ex-bot
     restart: unless-stopped
     env_file:
       - .env
     volumes:
       - v2ex-data:/data
-    # 也可以挂载宿主机的目录，比如:
-    # - ./data:/data
     environment:
-      - TZ=UTC # Cron 默认为 UTC，保持一致
+      - TZ=UTC
+
+    # ===== 安全加固 =====
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN    # Chromium 沙盒需要
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+      - /home/v2ex:size=200m
+
+    # 内存限制（防止 Chromium 吃光宿主机）
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
 
 volumes:
   v2ex-data:
