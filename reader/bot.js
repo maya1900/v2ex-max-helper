@@ -499,7 +499,9 @@ async function poll() {
       }
 
       const text = msg.text.trim();
-      const cmd = text.split(/\s+/)[0].toLowerCase();
+      const parts = text.split(/\s+/);
+      const cmd = parts[0].toLowerCase();
+      const arg = parts[1];
       console.log(`[BOT] 收到消息: ${cmd}`);
 
       try {
@@ -511,16 +513,33 @@ async function poll() {
           runScript('手动签到', process.execPath, ['../checkin/v2ex-checkin.js'], __dirname);
         }
         else if (cmd === '/read') {
-          await sendMsg('⏳ 正在启动手动阅读...');
+          let limit = 5;
+          if (arg) {
+            const parsed = parseInt(arg, 10);
+            if (parsed > 0) limit = parsed;
+          }
+          await sendMsg(`⏳ 正在启动手动阅读（限制阅读 ${limit} 篇）...`);
           const hasXvfb = fs.existsSync('/usr/bin/xvfb-run');
+          const args = ['main.js', '--limit', String(limit)];
           if (hasXvfb) {
-            runScript('手动阅读', '/usr/bin/xvfb-run', ['-a', process.execPath, 'main.js'], __dirname);
+            runScript('手动阅读', '/usr/bin/xvfb-run', ['-a', process.execPath, ...args], __dirname);
           } else {
-            runScript('手动阅读', process.execPath, ['main.js'], __dirname);
+            runScript('手动阅读', process.execPath, args, __dirname);
+          }
+        }
+        else if (cmd === '/cookie') {
+          const cookieText = text.slice(cmd.length).trim();
+          if (!cookieText) {
+            await sendMsg('💡 用法：<code>/cookie [粘贴你的V2EX Cookie]</code>\nBot 会自动解析并保存有效字段。');
+          } else {
+            const handled = await handleCookieImport(cookieText);
+            if (!handled) {
+              await sendMsg('❌ 未能从中识别出有效的 V2EX Cookie（如 A2 字段）。请确认格式。');
+            }
           }
         }
         else if (cmd.startsWith('/')) {
-          await sendMsg('可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read — 运行手动阅读\n\n💡 直接粘贴 Cookie 文本即可自动识别导入');
+          await sendMsg('可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read [数量] — 运行手动阅读（默认 5 篇）\n/cookie [Cookie内容] — 识别并导入新 Cookie\n\n💡 直接粘贴 Cookie 文本也可以自动识别导入');
         } else {
           // 非命令消息：尝试智能识别 Cookie
           const handled = await handleCookieImport(text);
@@ -601,7 +620,7 @@ console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`
   } else {
     startupMsg += '\n✅ Cookie 文件已就绪';
   }
-  startupMsg += '\n\n可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read — 运行手动阅读';
+  startupMsg += '\n\n可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read [数量] — 运行手动阅读（默认 5 篇）\n/cookie [Cookie内容] — 识别并导入新 Cookie';
 
   await sendMsg(startupMsg);
 
