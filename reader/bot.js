@@ -494,7 +494,7 @@ async function poll() {
 
       // 硬锁：只响应授权 chat_id
       if (String(msg.chat.id) !== ALLOWED_CHAT_ID) {
-        console.log('[BOT] 忽略非授权消息');
+        console.log(`[BOT] 忽略非授权消息, 来源 chat_id: ${msg.chat.id}`);
         continue;
       }
 
