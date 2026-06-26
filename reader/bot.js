@@ -38,6 +38,28 @@ const LOCK_FILE       = path.join(os.tmpdir(), 'v2ex_reader.lock');
 const BALANCE_LOG     = path.join(DATA_DIR, 'balance_log.json');
 const READER_LOG      = process.env.READER_LOG || path.join(DATA_DIR, 'v2ex-reader.log');
 
+const LOG_LEVEL_FILE  = path.join(DATA_DIR, 'log_level.txt');
+let currentLogLevel = 'OFF';
+try {
+  if (fs.existsSync(LOG_LEVEL_FILE)) {
+    currentLogLevel = fs.readFileSync(LOG_LEVEL_FILE, 'utf8').trim().toUpperCase();
+  }
+} catch (_) {}
+
+function shouldWriteLog(lineLevel) {
+  if (currentLogLevel === 'OFF') return false;
+  if (currentLogLevel === 'ERROR') {
+    return lineLevel === 'ERROR';
+  }
+  if (currentLogLevel === 'WARN') {
+    return lineLevel === 'ERROR' || lineLevel === 'WARN';
+  }
+  if (currentLogLevel === 'INFO') {
+    return true;
+  }
+  return false;
+}
+
 // Cookie 文件路径（与 browser.js / v2ex-checkin.js 保持一致）
 const PROFILE     = (process.env.V2EX_PROFILE || 'default').trim() || 'default';
 const COOKIE_FILE = process.env.COOKIE_FILE
@@ -136,27 +158,21 @@ async function handleSou() {
   return sendMsg(msg);
 }
 
-// /debug — 从日志文件读取最近 ERROR/WARN 行
-async function handleDebug() {
-  if (!fs.existsSync(READER_LOG)) {
-    return sendMsg('⚠️ 日志文件不存在: ' + READER_LOG);
+// /debug — 修改日志级别，默认不产生日志，一共四个级别
+async function handleDebug(levelArg) {
+  const levels = ['OFF', 'ERROR', 'WARN', 'INFO'];
+  if (!levelArg) {
+    return sendMsg(`🔍 <b>当前日志级别</b>: <code>${currentLogLevel}</code>\n\n可用级别（共 4 个）：\n- <code>OFF</code> (默认，不产生日志)\n- <code>ERROR</code> (只记录 ERROR)\n- <code>WARN</code> (记录 ERROR 和 WARN)\n- <code>INFO</code> (记录所有日志)\n\n💡 用法：<code>/debug [级别]</code>`);
   }
+  const targetLevel = levelArg.toUpperCase();
+  if (!levels.includes(targetLevel)) {
+    return sendMsg(`❌ 无效的级别 <code>${levelArg}</code>。请选择以下之一：<code>OFF</code>, <code>ERROR</code>, <code>WARN</code>, <code>INFO</code>`);
+  }
+  currentLogLevel = targetLevel;
   try {
-    // 读取最后 300 行，过滤 ERROR/WARN
-    const content = fs.readFileSync(READER_LOG, 'utf8');
-    const lines   = content.split('\n').filter(Boolean);
-    const tail    = lines.slice(-300);
-    const errors  = tail.filter(l => l.includes('[ERROR]') || l.includes('[WARN ]'));
-
-    if (errors.length === 0) {
-      return sendMsg('✅ 最近日志无报错');
-    }
-    // 取最新 10 条
-    const recent = errors.slice(-10).join('\n');
-    return sendMsg(`🔍 <b>最新报错（最多10条）</b>\n<pre>${escapeHtml(recent)}</pre>`);
-  } catch (e) {
-    return sendMsg(`读取日志失败: ${e.message}`);
-  }
+    fs.writeFileSync(LOG_LEVEL_FILE, currentLogLevel, 'utf8');
+  } catch (_) {}
+  return sendMsg(`✅ 日志级别已成功更改为: <code>${currentLogLevel}</code>`);
 }
 
 // /stop — 向阅读脚本发送 SIGTERM
@@ -349,26 +365,47 @@ function runScript(name, command, args, cwd) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const logStream = fs.createWriteStream(READER_LOG, { flags: 'a', mode: 0o600 });
-
   child.stdout.on('data', d => {
-    const lines = d.toString().trim();
-    if (lines) {
-      console.log(`[${name}] ${lines}`);
-      logStream.write(`[${new Date().toISOString()}] [${name}] [INFO] ${lines}\n`);
+    const dataStr = d.toString();
+    const lines = dataStr.split('\n');
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
+      console.log(`[${name}] ${line}`);
+      
+      let lineLevel = 'INFO';
+      if (line.includes('[ERROR]')) lineLevel = 'ERROR';
+      else if (line.includes('[WARN ]') || line.includes('[WARN]')) lineLevel = 'WARN';
+      
+      if (shouldWriteLog(lineLevel)) {
+        try {
+          fs.appendFileSync(READER_LOG, `[${new Date().toISOString()}] [${name}] [${lineLevel}] ${line}\n`);
+        } catch (_) {}
+      }
     }
   });
   child.stderr.on('data', d => {
-    const lines = d.toString().trim();
-    if (lines) {
-      console.error(`[${name}] ${lines}`);
-      logStream.write(`[${new Date().toISOString()}] [${name}] [ERROR] ${lines}\n`);
+    const dataStr = d.toString();
+    const lines = dataStr.split('\n');
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
+      console.error(`[${name}] ${line}`);
+      
+      let lineLevel = 'ERROR';
+      if (line.includes('[WARN ]') || line.includes('[WARN]')) lineLevel = 'WARN';
+      else if (line.includes('[INFO ]') || line.includes('[INFO]')) lineLevel = 'INFO';
+      
+      if (shouldWriteLog(lineLevel)) {
+        try {
+          fs.appendFileSync(READER_LOG, `[${new Date().toISOString()}] [${name}] [${lineLevel}] ${line}\n`);
+        } catch (_) {}
+      }
     }
   });
 
   child.on('close', (code) => {
     console.log(`[调度器] ${name} 退出 (code ${code})`);
-    logStream.end();
     runningTask = null;
   });
 
@@ -548,7 +585,7 @@ async function poll() {
           }
         }
         else if (cmd.startsWith('/')) {
-          await sendMsg('可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read [数量] — 运行手动阅读（默认 5 篇）\n/cookie [Cookie内容] — 识别并导入新 Cookie\n\n💡 直接粘贴 Cookie 文本也可以自动识别导入');
+          await sendMsg('可用命令：\n/sou — 余额记录\n/debug [级别] — 修改日志级别（OFF/ERROR/WARN/INFO）\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read [数量] — 运行手动阅读（默认 5 篇）\n/cookie [Cookie内容] — 识别并导入新 Cookie\n\n💡 直接粘贴 Cookie 文本也可以自动识别导入');
         } else {
           // 非命令消息：尝试智能识别 Cookie
           const handled = await handleCookieImport(text);
@@ -639,7 +676,7 @@ console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`
   } else {
     startupMsg += '\n✅ Cookie 文件已就绪';
   }
-  startupMsg += '\n\n可用命令：\n/sou — 余额记录\n/debug — 最新报错\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read [数量] — 运行手动阅读（默认 5 篇）\n/cookie [Cookie内容] — 识别并导入新 Cookie';
+  startupMsg += '\n\n可用命令：\n/sou — 余额记录\n/debug [级别] — 修改日志级别（OFF/ERROR/WARN/INFO）\n/stop — 停止阅读脚本\n/checkin — 运行手动签到\n/read [数量] — 运行手动阅读（默认 5 篇）\n/cookie [Cookie内容] — 识别并导入新 Cookie';
 
   await sendMsg(startupMsg);
 
