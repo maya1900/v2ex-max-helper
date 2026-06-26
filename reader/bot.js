@@ -349,17 +349,26 @@ function runScript(name, command, args, cwd) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
+  const logStream = fs.createWriteStream(READER_LOG, { flags: 'a', mode: 0o600 });
+
   child.stdout.on('data', d => {
     const lines = d.toString().trim();
-    if (lines) console.log(`[${name}] ${lines}`);
+    if (lines) {
+      console.log(`[${name}] ${lines}`);
+      logStream.write(`[${new Date().toISOString()}] [${name}] [INFO] ${lines}\n`);
+    }
   });
   child.stderr.on('data', d => {
     const lines = d.toString().trim();
-    if (lines) console.error(`[${name}] ${lines}`);
+    if (lines) {
+      console.error(`[${name}] ${lines}`);
+      logStream.write(`[${new Date().toISOString()}] [${name}] [ERROR] ${lines}\n`);
+    }
   });
 
   child.on('close', (code) => {
     console.log(`[调度器] ${name} 退出 (code ${code})`);
+    logStream.end();
     runningTask = null;
   });
 
@@ -564,6 +573,16 @@ async function poll() {
 console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`);
 
 (async () => {
+  // 确保 DATA_DIR 存在
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.appendFileSync(READER_LOG, `[${new Date().toISOString()}] [BOT] Bot started\n`);
+  } catch (e) {
+    console.error(`[BOT] 初始化 DATA_DIR / READER_LOG 失败: ${e.message}`);
+  }
+
   // 启动铁墙 HTTP 服务器（必须在轮询之前，否则 Render 判定启动失败）
   startHttpWall();
 
