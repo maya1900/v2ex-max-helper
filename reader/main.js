@@ -23,6 +23,7 @@ const notify  = require('./notify');
 
 // ========== 配置 ==========
 const MAX_READ_COUNT    = 1000;   // 每日阅读上限（安全兜底）
+const MIN_READ_COUNT    = 250;    // 每日最低阅读量（且需两次余额变化才退出）
 const MAX_CHANGE_COUNT  = 2;      // 余额变化上限（活跃度两次）
 const BALANCE_CHECK_INTERVAL = 50; // 每读多少篇检查一次余额
 const QUEUE_REFILL_THRESHOLD = 150;// 队列低于此数时补充
@@ -131,7 +132,7 @@ async function main() {
 
   logger.sep();
   logger.info(`🚀 V2EX Reader 启动 (dry-run=${isDryRun})`);
-  logger.info(`限制: 最多 ${EFFECTIVE_LIMIT} 篇 | 余额变化 ${MAX_CHANGE_COUNT} 次 | 截止 UTC ${DEADLINE_UTC_HOUR}:00`);
+  logger.info(`限制: 最低 ${MIN_READ_COUNT} 篇且余额变化 ${MAX_CHANGE_COUNT} 次退出 | 最多 ${EFFECTIVE_LIMIT} 篇 | 截止 UTC ${DEADLINE_UTC_HOUR}:00`);
   logger.sep();
 
   const startTime = Date.now();
@@ -226,10 +227,10 @@ async function main() {
       const changes = await balance.check(freshCookie);
       stats.changed = changes;
 
-      // 停止条件 1：余额变化足够
-      if (changes >= MAX_CHANGE_COUNT) {
+      // 停止条件 1：余额变化足够且已读满最低阅读量
+      if (changes >= MAX_CHANGE_COUNT && stats.read >= MIN_READ_COUNT) {
         stats.elapsed = elapsed(startTime);
-        await shutdown(`余额已变化 ${changes} 次，活跃度奖励已全部触发`, stats);
+        await shutdown(`余额已变化 ${changes} 次且已阅读超过最低标准 ${MIN_READ_COUNT} 篇（当前已读 ${stats.read} 篇），活跃度奖励已全部触发，自动退出`, stats);
       }
 
       const s = queue.stats();
