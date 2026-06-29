@@ -6,7 +6,12 @@ const fs    = require('fs');
 const os    = require('os');
 const path  = require('path');
 
-const COOKIE_FILE = process.env.COOKIE_FILE || path.join(os.homedir(), '.v2ex_cookie');
+const PROFILE = (process.env.V2EX_PROFILE || 'default').trim() || 'default';
+const DATA_DIR = process.env.V2EX_DATA_DIR || os.homedir();
+const COOKIE_FILE = process.env.COOKIE_FILE
+  || (PROFILE === 'default'
+      ? path.join(DATA_DIR, '.v2ex_cookie')
+      : path.join(DATA_DIR, `.v2ex_cookie.${PROFILE}`));
 const cookie = fs.readFileSync(COOKIE_FILE, 'utf8').trim();
 
 const req = https.request({

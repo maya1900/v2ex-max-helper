@@ -6,7 +6,8 @@ const path   = require('path');
 const logger = require('./logger');
 const notify = require('./notify');
 
-const BALANCE_LOG = path.join(__dirname, 'data', 'balance_log.json');
+const DATA_DIR = process.env.V2EX_DATA_DIR || path.join(__dirname, 'data');
+const BALANCE_LOG = path.join(DATA_DIR, 'balance_log.json');
 
 const HOST = 'www.v2ex.com';
 
@@ -73,6 +74,9 @@ function saveBalanceLog(html) {
   try {
     const balance = parseBalance(html);
     if (!balance) return;
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     let log = {};
     if (fs.existsSync(BALANCE_LOG)) {
