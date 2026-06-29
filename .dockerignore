@@ -13,6 +13,8 @@ reader/data/
 .v2ex_cookie
 .v2ex_cookie.*
 ~/.v2ex_cookie
+.telegram_chat_id
+.telegram_chat_id.*
 *.cookie
 cookies*.txt
 cookies*.json

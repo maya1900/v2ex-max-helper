@@ -14,6 +14,8 @@ services:
         sync: false
       - key: TG_CHAT_ID
         sync: false
+      - key: TG_SETUP_CODE
+        sync: false
       # 非敏感配置
       - key: NODE_ENV
         value: production

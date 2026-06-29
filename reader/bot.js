@@ -9,7 +9,8 @@
 //
 // 配置（环境变量或 ~/.v2ex_env 文件）：
 //   TG_TOKEN    — Telegram Bot Token
-//   TG_CHAT_ID  — 唯一授权用户的 Chat ID（硬锁，只响应该用户）
+//   TG_CHAT_ID  — 唯一授权用户的 Chat ID（可选；未设置时首次私聊自动绑定）
+//   TG_SETUP_CODE — 可选绑定口令；设置后首次绑定需发送 /bind <code>
 //   READER_LOG  — 阅读脚本日志路径（默认 /var/log/v2ex-reader.log）
 
 const https  = require('https');
@@ -32,11 +33,14 @@ function loadEnvFile() {
 loadEnvFile();
 
 const TOKEN           = process.env.TG_TOKEN   || '';
-const ALLOWED_CHAT_ID = process.env.TG_CHAT_ID || '';   // 硬锁，唯一授权用户
+const SETUP_CODE      = process.env.TG_SETUP_CODE || '';
 const DATA_DIR        = process.env.V2EX_DATA_DIR || path.join(__dirname, 'data');
 const LOCK_FILE       = path.join(os.tmpdir(), 'v2ex_reader.lock');
 const BALANCE_LOG     = path.join(DATA_DIR, 'balance_log.json');
 const READER_LOG      = process.env.READER_LOG || path.join(DATA_DIR, 'v2ex-reader.log');
+const AUTH_CHAT_FILE  = path.join(DATA_DIR, '.telegram_chat_id');
+
+let ALLOWED_CHAT_ID = loadAuthorizedChatId();   // 硬锁，唯一授权用户
 
 const LOG_LEVEL_FILE  = path.join(DATA_DIR, 'log_level.txt');
 let currentLogLevel = 'OFF';
@@ -60,6 +64,25 @@ function shouldWriteLog(lineLevel) {
   return false;
 }
 
+function loadAuthorizedChatId() {
+  if (process.env.TG_CHAT_ID) return process.env.TG_CHAT_ID.trim();
+  try {
+    if (fs.existsSync(AUTH_CHAT_FILE)) {
+      return fs.readFileSync(AUTH_CHAT_FILE, 'utf8').trim();
+    }
+  } catch (_) {}
+  return '';
+}
+
+function saveAuthorizedChatId(chatId) {
+  const id = String(chatId || '').trim();
+  if (!id) throw new Error('empty chat id');
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(AUTH_CHAT_FILE, `${id}\n`, { mode: 0o600 });
+  ALLOWED_CHAT_ID = id;
+  process.env.TG_CHAT_ID = id;
+}
+
 // Cookie 文件路径（与 browser.js / v2ex-checkin.js 保持一致）
 const PROFILE     = (process.env.V2EX_PROFILE || 'default').trim() || 'default';
 const COOKIE_FILE = process.env.COOKIE_FILE
@@ -78,8 +101,7 @@ const V2EX_COOKIE_KEYS = [
   '_gid',            // ⚪ Google Analytics
 ];
 
-if (!TOKEN)           { console.error('TG_TOKEN 未设置'); process.exit(1); }
-if (!ALLOWED_CHAT_ID) { console.error('TG_CHAT_ID 未设置'); process.exit(1); }
+if (!TOKEN) { console.error('TG_TOKEN 未设置'); process.exit(1); }
 
 function maskId(id) {
   const s = String(id || '');
@@ -130,6 +152,7 @@ function tgRequest(method, params) {
 }
 
 function sendMsg(text) {
+  if (!ALLOWED_CHAT_ID) return Promise.resolve({ ok: false, skipped: 'not_bound' });
   return tgRequest('sendMessage', {
     chat_id:    ALLOWED_CHAT_ID,
     text,
@@ -138,6 +161,7 @@ function sendMsg(text) {
 }
 
 function sendMsgWithKeyboard(text, replyMarkup) {
+  if (!ALLOWED_CHAT_ID) return Promise.resolve({ ok: false, skipped: 'not_bound' });
   return tgRequest('sendMessage', {
     chat_id:      ALLOWED_CHAT_ID,
     text,
@@ -147,6 +171,7 @@ function sendMsgWithKeyboard(text, replyMarkup) {
 }
 
 function editMsgText(messageId, text, replyMarkup) {
+  if (!ALLOWED_CHAT_ID) return Promise.resolve({ ok: false, skipped: 'not_bound' });
   const params = {
     chat_id:    ALLOWED_CHAT_ID,
     message_id: messageId,
@@ -155,6 +180,14 @@ function editMsgText(messageId, text, replyMarkup) {
   };
   if (replyMarkup) params.reply_markup = replyMarkup;
   return tgRequest('editMessageText', params);
+}
+
+function sendDirectMsg(chatId, text) {
+  return tgRequest('sendMessage', {
+    chat_id:    String(chatId),
+    text,
+    parse_mode: 'HTML',
+  });
 }
 
 // ========== 命令处理 ==========
@@ -866,6 +899,38 @@ async function handleCallbackQuery(query) {
   }
 }
 
+async function handleUnboundMessage(msg) {
+  if (!msg.chat || msg.chat.type !== 'private') {
+    console.log(`[BOT] 未绑定状态下忽略非私聊消息, 来源 chat_id: ${maskId(msg.chat && msg.chat.id)}`);
+    return;
+  }
+
+  const text = (msg.text || '').trim();
+  if (SETUP_CODE) {
+    const bindCommand = `/bind ${SETUP_CODE}`;
+    if (text !== SETUP_CODE && text !== bindCommand) {
+      await sendDirectMsg(
+        msg.chat.id,
+        '🔐 <b>Bot 尚未绑定授权用户</b>\n\n请发送 <code>/bind 你的绑定口令</code> 完成绑定。'
+      );
+      return;
+    }
+  }
+
+  try {
+    saveAuthorizedChatId(msg.chat.id);
+    console.log(`[BOT] 已绑定授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`);
+    await sendDirectMsg(
+      ALLOWED_CHAT_ID,
+      '✅ <b>授权绑定成功</b>\n\n你的 Telegram Chat ID 只保存在运行时数据目录，不会写入仓库或日志明文。'
+    );
+    await handleStart();
+  } catch (e) {
+    console.error(`[BOT] 绑定授权用户失败: ${e.message}`);
+    await sendDirectMsg(msg.chat.id, `❌ 绑定失败: ${e.message}`);
+  }
+}
+
 async function poll() {
   try {
     const res = await tgRequest('getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] });
@@ -886,8 +951,12 @@ async function poll() {
       if (update.message) {
         const msg = update.message;
         if (!msg.text) continue;
+        if (!ALLOWED_CHAT_ID) {
+          await handleUnboundMessage(msg);
+          continue;
+        }
         if (String(msg.chat.id) !== ALLOWED_CHAT_ID) {
-          console.log(`[BOT] 忽略非授权消息, 来源 chat_id: ${msg.chat.id}`);
+          console.log(`[BOT] 忽略非授权消息, 来源 chat_id: ${maskId(msg.chat.id)}`);
           continue;
         }
         await handleMessage(msg);
@@ -895,8 +964,12 @@ async function poll() {
       
       if (update.callback_query) {
         const query = update.callback_query;
+        if (!ALLOWED_CHAT_ID) {
+          console.log('[BOT] 未绑定状态下忽略 CallbackQuery');
+          continue;
+        }
         if (String(query.from.id) !== ALLOWED_CHAT_ID) {
-          console.log(`[BOT] 忽略非授权 CallbackQuery, 来源 user_id: ${query.from.id}`);
+          console.log(`[BOT] 忽略非授权 CallbackQuery, 来源 user_id: ${maskId(query.from.id)}`);
           continue;
         }
         await handleCallbackQuery(query);
@@ -912,7 +985,11 @@ async function poll() {
 }
 
 // ========== 主启动逻辑（含重启恢复）==========
-console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`);
+if (ALLOWED_CHAT_ID) {
+  console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`);
+} else {
+  console.log('[BOT] V2EX Bot 启动，尚未绑定授权 Chat ID，等待首次私聊绑定');
+}
 
 (async () => {
   // 确保 DATA_DIR 存在
@@ -983,7 +1060,13 @@ console.log(`[BOT] V2EX Bot 启动，授权 Chat ID: ${maskId(ALLOWED_CHAT_ID)}`
   }
   startupMsg += '\n\n💡 发送 /start 打开交互遥控中心\n可用命令：/start, /help, /sou, /tasks, /stop, /checkin, /read [数量], /debug [级别], /cookie [内容]';
 
-  await sendMsg(startupMsg);
+  if (ALLOWED_CHAT_ID) {
+    await sendMsg(startupMsg);
+  } else if (SETUP_CODE) {
+    console.log('[BOT] 未配置 TG_CHAT_ID；请在 Telegram 私聊 Bot 发送 /bind <TG_SETUP_CODE>');
+  } else {
+    console.log('[BOT] 未配置 TG_CHAT_ID；将自动绑定第一位私聊 Bot 的用户');
+  }
 
   // 启动内置调度器
   startScheduler();

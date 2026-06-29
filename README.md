@@ -182,7 +182,7 @@ node inspect_balance.js
 | `/debug` | 查看阅读脚本最近的报错日志 |
 | `/stop` | 远程停止正在运行的阅读脚本 |
 
-Bot 通过 `TG_CHAT_ID` **硬锁授权**，只响应你本人的消息，其他人无法控制。
+Bot 通过 `TG_CHAT_ID` 或首次私聊绑定文件 **硬锁授权**，只响应你本人的消息，其他人无法控制。为减少隐私暴露，`TG_CHAT_ID` 可以不填；首次私聊 Bot 后会自动把 Chat ID 写入运行时数据目录。建议同时设置 `TG_SETUP_CODE`，首次绑定时发送 `/bind <口令>`。
 
 ### 安装 Bot
 
@@ -193,7 +193,7 @@ sudo bash scripts/install-systemd.sh --bot   # 安装 Bot 常驻 service
 systemctl status v2ex-bot                     # 查看状态
 ```
 
-> 前提：确保 `~/.v2ex_env` 中已填入 `TG_TOKEN` 和 `TG_CHAT_ID`。
+> 前提：确保 `~/.v2ex_env` 中已填入 `TG_TOKEN`。`TG_CHAT_ID` 可选；未填写时 Bot 会等待首次私聊绑定。
 
 ---
 
@@ -319,12 +319,12 @@ rm -f ~/.v2ex_cookie ~/.v2ex_env
 
 ```bash
 cp .env.render.example .env
-# 编辑 .env，至少填入 TG_TOKEN 和 TG_CHAT_ID；V2EX_COOKIE 可先留空
+# 编辑 .env，至少填入 TG_TOKEN；V2EX_COOKIE 和 TG_CHAT_ID 可先留空
 docker compose up -d --build
 docker compose logs -f v2ex-bot
 ```
 
-如果没有在 `.env` 里填写 `V2EX_COOKIE`，容器启动后直接在 Telegram 私聊 Bot 粘贴完整 V2EX Cookie，Bot 会自动识别、验证并写入持久化数据卷。
+如果没有在 `.env` 里填写 `TG_CHAT_ID`，容器启动后先私聊 Bot 完成绑定；设置了 `TG_SETUP_CODE` 时发送 `/bind <口令>`，未设置时第一位私聊用户会自动绑定。随后直接粘贴完整 V2EX Cookie，Bot 会自动识别、验证并写入持久化数据卷。
 
 运行数据保存在 `v2ex-data` volume 中；脚本刷新后的 Cookie 会优先沿用 volume 里的版本，避免容器重启时被旧环境变量覆盖。
 
@@ -335,7 +335,8 @@ docker compose logs -f v2ex-bot
 ```text
 V2EX_COOKIE=完整 V2EX Cookie
 TG_TOKEN=BotFather 申请的 Bot Token
-TG_CHAT_ID=你的 Telegram 数字 Chat ID
+TG_CHAT_ID=你的 Telegram 数字 Chat ID（可选）
+TG_SETUP_CODE=首次私聊绑定口令（可选，建议设置）
 ```
 
 健康检查路径为 `/health`。如果只想运行签到和 Bot，不跑自动阅读，可额外设置：

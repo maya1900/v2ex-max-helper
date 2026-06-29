@@ -18,9 +18,17 @@ function loadConfig() {
       }
     }
   }
+  const dataDir = process.env.V2EX_DATA_DIR || path.join(__dirname, 'data');
+  const authChatFile = path.join(dataDir, '.telegram_chat_id');
+  let chatId = process.env.TG_CHAT_ID || '';
+  if (!chatId && fs.existsSync(authChatFile)) {
+    try {
+      chatId = fs.readFileSync(authChatFile, 'utf8').trim();
+    } catch (_) {}
+  }
   return {
-    token:  process.env.TG_TOKEN   || '',
-    chatId: process.env.TG_CHAT_ID || '',
+    token: process.env.TG_TOKEN || '',
+    chatId,
   };
 }
 
