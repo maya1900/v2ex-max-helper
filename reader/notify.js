@@ -67,11 +67,15 @@ async function notifyReaderDone(stats) {
 
 // 连续错误停止
 async function notifyReaderError(stats) {
+  const reason = stats.reason || '连续 3 次失败';
+  const hint = reason.includes('Cookie')
+    ? 'Cookie 已确认失效，请更新'
+    : '已跳过异常帖子，请查看日志确认网络/CF/重定向状态';
   await sendMessage(
     `⚠️ <b>V2EX 阅读中止</b>\n` +
-    `❌ 连续 3 次失败，已停止\n` +
+    `❌ ${reason}\n` +
     `📖 已读: ${stats.read} 篇\n` +
-    `💡 Cookie 可能已失效，请更新`
+    `💡 ${hint}`
   );
 }
 

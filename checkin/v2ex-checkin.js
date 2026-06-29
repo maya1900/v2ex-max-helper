@@ -98,12 +98,14 @@ function cookieToMap(str) {
 }
 
 // 把服务端响应的 Set-Cookie 数组合并进现有 cookie 字符串（新值覆盖同名旧值）。
-// 这正是「自动刷新登录态」的核心：V2EX 的 A2 登录 cookie 会滑动续期，
-// 只要把每次响应里下发的新 A2 写回，登录态就能持续延长、无需重新登录。
+// 注意：普通访问经常只刷新 A2O / V2EX_LANG 等辅助字段，不代表核心 A2 已续期。
 function mergeSetCookies(currentCookie, setCookieArr) {
-  if (!setCookieArr || setCookieArr.length === 0) return { cookie: currentCookie, changed: false };
+  if (!setCookieArr || setCookieArr.length === 0) {
+    return { cookie: currentCookie, changed: false, changedKeys: [] };
+  }
   const map = cookieToMap(currentCookie);
   let changed = false;
+  const changedKeys = [];
   for (const sc of setCookieArr) {
     // 每条 Set-Cookie 形如 "A2=xxx; Path=/; Expires=...; HttpOnly"
     const first = sc.split(';')[0];
@@ -116,21 +118,36 @@ function mergeSetCookies(currentCookie, setCookieArr) {
     if (value === '' || value === 'deleted') continue;
     if (map.get(name) !== value) {
       map.set(name, value);
+      changedKeys.push(name);
       changed = true;
     }
   }
   const merged = Array.from(map.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
-  return { cookie: merged, changed };
+  return { cookie: merged, changed, changedKeys };
 }
 
 // 用响应的 Set-Cookie 刷新本地 cookie 文件（仅在有变化时写盘）
 function refreshCookieFromResponse(currentCookie, setCookieArr) {
-  const { cookie, changed } = mergeSetCookies(currentCookie, setCookieArr);
+  const { cookie, changed, changedKeys } = mergeSetCookies(currentCookie, setCookieArr);
   if (changed) {
     writeCookie(cookie);
-    log('🔄 登录态已自动续期（Set-Cookie 已写回）');
+    logCookieChanges(changedKeys);
   }
   return cookie;
+}
+
+function logCookieChanges(changedKeys) {
+  const authKeys = new Set(['A2', 'PB3_SESSION', 'cf_clearance']);
+  const uniqueKeys = [...new Set(changedKeys)];
+  const authChanged = uniqueKeys.filter(k => authKeys.has(k));
+  const auxChanged = uniqueKeys.filter(k => !authKeys.has(k));
+
+  if (authChanged.length > 0) {
+    log(`🔄 核心 Cookie 已更新: ${authChanged.join(', ')}`);
+  }
+  if (auxChanged.length > 0) {
+    log(`🔄 辅助 Cookie 已更新: ${auxChanged.join(', ')}`);
+  }
 }
 
 // ========== HTTP 请求 ==========

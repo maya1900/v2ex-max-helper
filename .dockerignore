@@ -4,8 +4,33 @@ node_modules
 *.md
 docs/
 reader/data/
+.env
+.env.*
+!.env.render.example
 .v2ex_env
+.v2ex_env.*
+!.v2ex_env.example
 .v2ex_cookie
+.v2ex_cookie.*
 ~/.v2ex_cookie
+*.cookie
+cookies*.txt
+cookies*.json
+storage_state*.json
+*.har
+*.db
+*.sqlite
+*.sqlite3
+chrome-profile/
+**/chrome-profile/
+browser-profile/
+profiles/
+user-data-dir/
+playwright/.auth/
+localStorage/
+sessionStorage/
+Session Storage/
+Local Storage/
 **/*.log
+logs/
 .DS_Store

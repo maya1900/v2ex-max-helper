@@ -189,6 +189,9 @@ async function readPost(url) {
     return true;
   } catch (e) {
     logger.warn(`读帖失败: ${e.message} → ${url}`);
+    if (shouldResetPage(e)) {
+      await resetPage();
+    }
     return false;
   }
 }
@@ -229,6 +232,29 @@ function randomDwellMs() {
 // 帖子之间的随机间隔（保证上限不小于下限）
 function randomBetweenMs() {
   return randInt(GAP_MIN, Math.max(GAP_MIN, GAP_MAX));
+}
+
+function shouldResetPage(error) {
+  const msg = String(error && error.message || '');
+  return msg.includes('ERR_TOO_MANY_REDIRECTS') ||
+         msg.includes('ERR_HTTP_RESPONSE_CODE_FAILURE') ||
+         msg.includes('Navigation to') ||
+         msg.includes('chrome-error://');
+}
+
+async function resetPage() {
+  if (!ctx) return;
+  try {
+    if (page && !page.isClosed()) {
+      await page.close({ runBeforeUnload: false });
+    }
+  } catch (_) {}
+  try {
+    page = await ctx.newPage();
+    logger.warn('已重建浏览器页面，后续将换帖继续');
+  } catch (e) {
+    logger.warn(`重建浏览器页面失败: ${e.message}`);
+  }
 }
 
 // 停留期间分多次随机向下滚动，模拟阅读时的视线移动
@@ -280,12 +306,30 @@ async function syncCookies() {
   try {
     const cookies = await ctx.cookies();
     const str     = serializeCookies(cookies);
-    if (str) {
-      fs.writeFileSync(COOKIE_FILE, str, { mode: 0o600 });
+    if (!str) return;
+    if (!hasCookieKey(str, 'A2')) {
+      logger.warn('Cookie 同步跳过：浏览器上下文缺少 A2，避免覆盖现有登录态');
+      return;
     }
+    atomicWriteCookie(str);
   } catch (e) {
     logger.warn(`Cookie 同步失败: ${e.message}`);
   }
+}
+
+function hasCookieKey(cookieStr, key) {
+  return cookieStr.split(';').some(part => {
+    const i = part.trim().indexOf('=');
+    return i > 0 && part.trim().slice(0, i) === key;
+  });
+}
+
+function atomicWriteCookie(cookieStr) {
+  const dir = path.dirname(COOKIE_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${COOKIE_FILE}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, cookieStr, { mode: 0o600 });
+  fs.renameSync(tmp, COOKIE_FILE);
 }
 
 // 获取当前 Cookie 字符串（供 balance.js / fetcher.js 使用）

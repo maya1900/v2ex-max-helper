@@ -12,6 +12,7 @@
 //   3. 超过运行时间窗口（UTC 06:00 = 北京 14:00）
 
 const fs      = require('fs');
+const https   = require('https');
 const os      = require('os');
 const path    = require('path');
 const logger  = require('./logger');
@@ -211,13 +212,26 @@ async function main() {
       stats.read++;
       stats.consecutiveErrors = 0;  // 成功则重置连续报错计数
     } else {
+      queue.skip(url);
       stats.consecutiveErrors = (stats.consecutiveErrors || 0) + 1;
       logger.warn(`读帖失败 (连续 ${stats.consecutiveErrors}/3 次): ${url}`);
+      logger.warn('当前失败 URL 已跳过，避免重复触发同一异常帖');
 
-      // Debug 保护：连续 3 次失败则停止
       if (stats.consecutiveErrors >= 3) {
+        const freshCookie = await browser.getCurrentCookie();
+        const loginState = isDryRun ? 'unknown' : await probeLogin(freshCookie);
+
+        if (loginState === 'logged_in') {
+          logger.warn('连续读帖失败，但登录探针通过；重置错误计数并继续换帖');
+          stats.consecutiveErrors = 0;
+          continue;
+        }
+
         stats.elapsed = elapsed(startTime);
-        await shutdown('连续 3 次读帖失败，停止运行（Cookie 可能失效）', stats);
+        const reason = loginState === 'logged_out'
+          ? '连续读帖失败，登录探针确认 Cookie 已失效'
+          : '连续读帖失败，登录探针无法确认状态';
+        await shutdown(reason, stats);
       }
     }
 
@@ -261,6 +275,45 @@ function elapsed(start) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function probeLogin(cookie) {
+  if (!cookie) return Promise.resolve('logged_out');
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'www.v2ex.com',
+      path: '/',
+      method: 'GET',
+      headers: {
+        Cookie: cookie,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8',
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        if (res.statusCode >= 500) return resolve('unknown');
+        const loggedOut = body.includes('你要查看的页面需要先登录') ||
+                          body.includes('需要先登录') ||
+                          body.includes('/signin');
+        const loggedIn = body.includes('/notifications') ||
+                         body.includes('/signout') ||
+                         body.includes('/member/');
+        if (loggedIn) return resolve('logged_in');
+        if (loggedOut) return resolve('logged_out');
+        resolve('unknown');
+      });
+    });
+    req.on('error', () => resolve('unknown'));
+    req.setTimeout(15000, () => {
+      req.destroy();
+      resolve('unknown');
+    });
+    req.end();
+  });
+}
 
 main().catch(async (e) => {
   logger.error(`未捕获错误: ${e.message}`);

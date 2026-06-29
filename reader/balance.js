@@ -36,7 +36,7 @@ function fetchBalance(cookie) {
   });
 }
 
-// 解析铜币数量（整数）
+// 解析铜币数量（整数，用于 baseline）
 function parseCopperCoins(html) {
   if (!html) return null;
   const block = (html.match(/balance_area bigger[\s\S]*?<\/div>/) || [])[0];
@@ -46,13 +46,33 @@ function parseCopperCoins(html) {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// 解析所有硬币（金、银、铜）
+function parseBalance(html) {
+  if (!html) return null;
+  const block = (html.match(/balance_area bigger[\s\S]*?<\/div>/) || [])[0];
+  if (!block) return null;
+
+  let gold = 0, silver = 0, copper = 0;
+  const re = /(\d+)\s+<img[^>]+alt="([A-Z])"/g;
+  let m;
+  while ((m = re.exec(block)) !== null) {
+    const val = parseInt(m[1], 10);
+    if (m[2] === 'G') gold = val;
+    else if (m[2] === 'S') silver = val;
+    else if (m[2] === 'B') copper = val;
+  }
+  return { gold, silver, copper };
+}
+
 // 状态
 let baseline    = null;   // 基线铜币值
 let changeCount = 0;      // 余额变化次数
 
 // 写余额日志（供 /sou 命令使用，不做实时查询）
-function saveBalanceLog(copper) {
+function saveBalanceLog(html) {
   try {
+    const balance = parseBalance(html);
+    if (!balance) return;
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     let log = {};
     if (fs.existsSync(BALANCE_LOG)) {
@@ -61,7 +81,14 @@ function saveBalanceLog(copper) {
     // 滚动：只保留最近 7 天
     const keys = Object.keys(log).sort();
     while (keys.length >= 7) { delete log[keys.shift()]; }
-    log[today] = { last: copper, lastTime: new Date().toISOString() };
+
+    log[today] = {
+      last: balance.copper,
+      gold: balance.gold,
+      silver: balance.silver,
+      copper: balance.copper,
+      lastTime: new Date().toISOString()
+    };
     fs.writeFileSync(BALANCE_LOG, JSON.stringify(log, null, 2));
   } catch (e) {
     logger.warn(`Balance log write failed: ${e.message}`);
@@ -79,7 +106,7 @@ async function init(cookie) {
     baseline    = copper;
     changeCount = 0;
     logger.info(`Balance baseline: ${copper} 铜币`);
-    saveBalanceLog(copper);
+    saveBalanceLog(html);
     return true;
   } catch (e) {
     logger.error(`Balance init failed: ${e.message}`);
@@ -96,7 +123,7 @@ async function check(cookie) {
       logger.warn('Balance: 无法解析铜币');
       return changeCount;
     }
-    saveBalanceLog(copper);
+    saveBalanceLog(html);
     if (copper !== baseline) {
       changeCount++;
       logger.ok(`Balance changed! ${baseline} → ${copper} 铜币 (变化第 ${changeCount} 次)`);

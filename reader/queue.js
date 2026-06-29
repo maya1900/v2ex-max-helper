@@ -83,6 +83,15 @@ function increment(url) {
   save();
 }
 
+// 失败帖标记为已读满，避免同一个异常 URL 连续触发停机
+function skip(url) {
+  db.run(
+    "UPDATE posts SET read_count = 3, last_read = strftime('%s','now') WHERE url = ?",
+    [url]
+  );
+  save();
+}
+
 // 当前可读条数
 function size() {
   const r = db.exec('SELECT COUNT(*) FROM posts WHERE read_count < 3');
@@ -108,4 +117,4 @@ function stats() {
   return { total, readable, exhausted };
 }
 
-module.exports = { init, add, pop, increment, size, cleanup, stats };
+module.exports = { init, add, pop, increment, skip, size, cleanup, stats };

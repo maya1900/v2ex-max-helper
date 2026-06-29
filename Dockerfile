@@ -29,13 +29,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/ms-playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
 
-# 复制依赖定义并安装
+# 复制依赖定义并安装。仓库不强制提交 package-lock，因此这里使用 npm install。
 COPY checkin/package*.json ./checkin/
 COPY reader/package*.json ./reader/
 
-RUN cd checkin && npm ci --omit=dev \
- && cd ../reader && npm ci --omit=dev \
- && npx --prefix reader playwright install chromium \
+RUN cd checkin && npm install --omit=dev --no-audit --no-fund \
+ && cd ../reader && npm install --omit=dev --no-audit --no-fund \
+ && ./node_modules/.bin/playwright install chromium \
+ && npm cache clean --force \
  && rm -rf /tmp/* ~/.npm
 
 # 复制业务代码

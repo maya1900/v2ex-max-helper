@@ -311,20 +311,36 @@ rm -f ~/.v2ex_cookie ~/.v2ex_env
 > 注：因含「禁止商用」条款，本许可证非 OSI 认证的开源许可证，仅限个人、学习与非商业自动化使用。
 
 
-## 🐳 Docker 一键部署 (Beta)
+## 🐳 Docker / Render 部署 (Beta)
 
-本项目现已支持 Docker 部署。只需要简单两步即可运行，免去环境配置的麻烦，彻底解决 Headless 无头浏览器检测问题：
+### Docker Compose
 
-1. 准备配置文件
-   \\\ash
-   cp .v2ex_env.example .env
-   # 编辑 .env 文件，填入你的 TG_TOKEN 和 TG_CHAT_ID
-   \\\
+本地或 VPS 已安装 Docker 后，可以直接使用仓库内的 `docker-compose.yml`：
 
-2. 启动容器
-   \\\ash
-   docker compose up -d
-   \\\
+```bash
+cp .env.render.example .env
+# 编辑 .env，至少填入 TG_TOKEN 和 TG_CHAT_ID；V2EX_COOKIE 可先留空
+docker compose up -d --build
+docker compose logs -f v2ex-bot
+```
 
-启动后，在 Telegram 给你的 Bot 发送包含 V2EX Cookie 的文字即可完成配置，定时任务会在每天后台自动运行！
+如果没有在 `.env` 里填写 `V2EX_COOKIE`，容器启动后直接在 Telegram 私聊 Bot 粘贴完整 V2EX Cookie，Bot 会自动识别、验证并写入持久化数据卷。
+
+运行数据保存在 `v2ex-data` volume 中；脚本刷新后的 Cookie 会优先沿用 volume 里的版本，避免容器重启时被旧环境变量覆盖。
+
+### Render
+
+仓库已包含 `render.yaml`，可在 Render Dashboard 通过 Blueprint 部署。部署时在 Environment 中手动填入：
+
+```text
+V2EX_COOKIE=完整 V2EX Cookie
+TG_TOKEN=BotFather 申请的 Bot Token
+TG_CHAT_ID=你的 Telegram 数字 Chat ID
+```
+
+健康检查路径为 `/health`。如果只想运行签到和 Bot，不跑自动阅读，可额外设置：
+
+```text
+SKIP_READER=1
+```
 

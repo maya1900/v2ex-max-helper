@@ -218,6 +218,19 @@ async function handleTasks() {
   }
 }
 
+// 格式化硬币显示，优先显示金币和银币
+function formatCoins(entry, bold = true) {
+  if (!entry) return '';
+  const parts = [];
+  const b = bold ? '<b>' : '';
+  const eb = bold ? '</b>' : '';
+  if (entry.gold) parts.push(`${b}${entry.gold}${eb} 金币`);
+  if (entry.silver) parts.push(`${b}${entry.silver}${eb} 银币`);
+  const copper = entry.copper !== undefined ? entry.copper : entry.last;
+  if (copper || parts.length === 0) parts.push(`${b}${copper || 0}${eb} 铜币`);
+  return parts.join(', ');
+}
+
 // /sou — 从本地余额记录读取，不做实时请求
 async function handleSou() {
   if (!fs.existsSync(BALANCE_LOG)) {
@@ -238,10 +251,10 @@ async function handleSou() {
 
   let msg = `💰 <b>余额记录</b>\n`;
   msg += todayEntry
-    ? `今日 (${today})：<b>${todayEntry.last} 铜币</b>  最后查询 ${todayTime} EST\n`
+    ? `今日 (${today})：${formatCoins(todayEntry, true)}  最后查询 ${todayTime} EST\n`
     : `今日：暂无记录\n`;
   msg += yesterdayEntry
-    ? `昨日 (${yesterday})：${yesterdayEntry.last} 铜币`
+    ? `昨日 (${yesterday})：${formatCoins(yesterdayEntry, false)}`
     : `昨日：暂无记录`;
 
   return sendMsg(msg);
@@ -764,10 +777,10 @@ async function handleCallbackQuery(query) {
         : '--';
       let msg = `💰 <b>余额记录</b>\n\n`;
       msg += todayEntry
-        ? `今日 (${today})：<b>${todayEntry.last} 铜币</b>  最后查询 ${todayTime} EST\n`
+        ? `今日 (${today})：${formatCoins(todayEntry, true)}  最后查询 ${todayTime} EST\n`
         : `今日：暂无记录\n`;
       msg += yesterdayEntry
-        ? `昨日 (${yesterday})：${yesterdayEntry.last} 铜币`
+        ? `昨日 (${yesterday})：${formatCoins(yesterdayEntry, false)}`
         : `昨日：暂无记录`;
       await editMsgText(messageId, msg, {
         inline_keyboard: [[{ text: '◀️ 返回面板', callback_data: 'go_to_start' }]]

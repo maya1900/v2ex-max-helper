@@ -1,6 +1,9 @@
 services:
   v2ex-bot:
     image: ghcr.io/mskatoni/v2ex-max-helper:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: v2ex-bot
     restart: unless-stopped
     env_file:
@@ -15,12 +18,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - SYS_ADMIN    # Chromium 沙盒需要
     read_only: true
     tmpfs:
       - /tmp:size=512m
-      - /app/ms-playwright:size=800m   # Playwright Chromium 运行时解压空间
 
     # 内存限制（防止 Chromium 吃光宿主机）
     deploy:
