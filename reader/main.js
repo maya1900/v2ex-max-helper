@@ -8,7 +8,7 @@
 //
 // 停止条件（任意一个）：
 //   1. 余额变化 >= 2 次（活跃度奖励已触发两轮）
-//   2. 阅读数量 >= MAX_READ_COUNT（安全兜底）
+//   2. 阅读数量 >= 本轮随机上限（安全兜底）
 //   3. 超过运行时间窗口（UTC 06:00 = 北京 14:00）
 
 const fs      = require('fs');
@@ -23,11 +23,9 @@ const browser = require('./browser');
 const notify  = require('./notify');
 
 // ========== 配置 ==========
-const MAX_READ_COUNT    = 1000;   // 每日阅读上限（安全兜底）
-const MIN_READ_COUNT    = 250;    // 每日最低阅读量（且需两次余额变化才退出）
-const MAX_CHANGE_COUNT  = 2;      // 余额变化上限（活跃度两次）
-const BALANCE_CHECK_INTERVAL = 50; // 每读多少篇检查一次余额
-const QUEUE_REFILL_THRESHOLD = 150;// 队列低于此数时补充
+const DEFAULT_MAX_READ_MIN = 850;  // 每日阅读上限随机下界（安全兜底）
+const DEFAULT_MAX_READ_MAX = 1100; // 每日阅读上限随机上界（安全兜底）
+const MAX_CHANGE_COUNT = 2;        // 余额变化上限（活跃度两次）
 // UTC 06:00 = 北京 14:00，超时强制退出
 const DEADLINE_UTC_HOUR = 6;
 
@@ -40,9 +38,16 @@ function parseLimit() {
     const n = parseInt(process.argv[idx + 1], 10);
     if (n > 0) return n;
   }
-  return isDryRun ? 10 : MAX_READ_COUNT;
+  return isDryRun ? 10 : randomRange('READ_MAX_COUNT_MIN', 'READ_MAX_COUNT_MAX', DEFAULT_MAX_READ_MIN, DEFAULT_MAX_READ_MAX);
 }
 const EFFECTIVE_LIMIT = parseLimit();
+const MIN_READ_COUNT = Math.min(
+  EFFECTIVE_LIMIT,
+  isDryRun ? EFFECTIVE_LIMIT : randomRange('READ_MIN_COUNT_MIN', 'READ_MIN_COUNT_MAX', 220, 300)
+);
+const BALANCE_CHECK_INTERVAL = randomRange('BALANCE_CHECK_INTERVAL_MIN', 'BALANCE_CHECK_INTERVAL_MAX', 40, 65);
+const QUEUE_REFILL_THRESHOLD = randomRange('QUEUE_REFILL_THRESHOLD_MIN', 'QUEUE_REFILL_THRESHOLD_MAX', 120, 180);
+const QUEUE_REFILL_INTERVAL = randomRange('QUEUE_REFILL_INTERVAL_MIN', 'QUEUE_REFILL_INTERVAL_MAX', 160, 240);
 
 // 跨平台锁文件
 const LOCK_FILE = path.join(os.tmpdir(), 'v2ex_reader.lock');
@@ -74,7 +79,7 @@ function isPastDeadline() {
   // dry-run 或手动指定 --limit 时不检查截止时间
   if (isDryRun || hasExplicitLimit) return false;
   const h = new Date().getUTCHours();
-  // 脚本预期 01:15 UTC 启动，06:00 UTC 截止
+  // 脚本预期 02:00-02:30 UTC 启动，06:00 UTC 截止
   // 只在 UTC 06:00~23:59 期间判定为超时（避免 00:xx~01:xx 启动前误判）
   return h >= DEADLINE_UTC_HOUR;
 }
@@ -134,6 +139,7 @@ async function main() {
   logger.sep();
   logger.info(`🚀 V2EX Reader 启动 (dry-run=${isDryRun})`);
   logger.info(`限制: 最低 ${MIN_READ_COUNT} 篇且余额变化 ${MAX_CHANGE_COUNT} 次退出 | 最多 ${EFFECTIVE_LIMIT} 篇 | 截止 UTC ${DEADLINE_UTC_HOUR}:00`);
+  logger.info(`本轮随机参数: 余额检查每 ${BALANCE_CHECK_INTERVAL} 篇 | 队列低于 ${QUEUE_REFILL_THRESHOLD} 补充 | 每 ${QUEUE_REFILL_INTERVAL} 篇主动补充`);
   logger.sep();
 
   const startTime = Date.now();
@@ -254,8 +260,8 @@ async function main() {
       logger.info(`队列: 可读 ${s.readable} | 已读满 ${s.exhausted} | 总计 ${s.total}`);
     }
 
-    // 每 200 篇主动补充队列（避免等到完全空了）
-    if (stats.read > 0 && stats.read % 200 === 0) {
+    // 主动补充队列（避免等到完全空了）
+    if (stats.read > 0 && stats.read % QUEUE_REFILL_INTERVAL === 0) {
       const freshCookie = await browser.getCurrentCookie();
       const urls = await fetcher.fetchAll(freshCookie);
       if (urls.length > 0) queue.add(urls);
@@ -278,6 +284,21 @@ function elapsed(start) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function intEnv(name, def) {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v > 0 ? v : def;
+}
+
+function randInt(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function randomRange(minName, maxName, defMin, defMax) {
+  const min = intEnv(minName, defMin);
+  const max = intEnv(maxName, defMax);
+  return randInt(Math.min(min, max), Math.max(min, max));
+}
 
 function probeLogin(cookie) {
   if (!cookie) return Promise.resolve('logged_out');

@@ -8,6 +8,7 @@ const DATA_DIR = process.env.V2EX_DATA_DIR
   ? path.join(process.env.V2EX_DATA_DIR, 'reader')
   : path.join(__dirname, 'data');
 const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'queue.db');
+const RANDOM_CANDIDATES = Math.max(1, intEnv('QUEUE_RANDOM_CANDIDATES', 80));
 
 let db = null;
 
@@ -65,13 +66,24 @@ function add(urls) {
   }
 }
 
-// 取一条可读帖子（read_count < 3）
+// 取一条可读帖子：先保留低阅读次数、较早入队的候选池，再从候选池中随机抽取
 function pop() {
   const result = db.exec(
-    'SELECT url FROM posts WHERE read_count < 3 ORDER BY read_count ASC, created_at ASC LIMIT 1'
+    `SELECT url FROM (
+       SELECT url
+       FROM posts
+       WHERE read_count < 3
+       ORDER BY read_count ASC, created_at ASC
+       LIMIT ${RANDOM_CANDIDATES}
+     ) ORDER BY RANDOM() LIMIT 1`
   );
   if (result.length === 0 || result[0].values.length === 0) return null;
   return result[0].values[0][0];
+}
+
+function intEnv(name, def) {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v > 0 ? v : def;
 }
 
 // 读取计数 +1

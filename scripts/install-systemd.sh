@@ -13,8 +13,9 @@
 #   sudo bash scripts/install-systemd.sh --no-reader     # 不安装阅读 timer
 #   sudo bash scripts/install-systemd.sh --bot           # 同时安装 Bot service
 #
-# 签到 / 保活时间默认按服务器本地时区解析。
-# 阅读模块默认使用显式 UTC 时间，避免 UTC 时区 VPS 错过 reader/main.js 的 UTC 06:00 截止窗口。
+# 签到 / 阅读默认使用显式 UTC 时间，对应北京时间 10:00-10:30。
+# 阅读模块仍在 reader/main.js 的 UTC 06:00 截止窗口内。
+# 保活时间默认按服务器本地时区解析。
 # =============================================================================
 set -euo pipefail
 
@@ -113,9 +114,9 @@ if [[ $INSTALL_READER -eq 1 ]]; then
 fi
 
 # 时间配置
-read -rp "签到时间 OnCalendar [*-*-* 09:10:00]: " T_CHECKIN; T_CHECKIN="${T_CHECKIN:-*-*-* 09:10:00}"
+read -rp "签到时间 OnCalendar [*-*-* 02:00:00 UTC]: " T_CHECKIN; T_CHECKIN="${T_CHECKIN:-*-*-* 02:00:00 UTC}"
 read -rp "保活时间 OnCalendar [*-*-* 00/6:00:00]: " T_PING;   T_PING="${T_PING:-*-*-* 00/6:00:00}"
-read -rp "阅读时间 OnCalendar [*-*-* 01:15:00 UTC]: " T_READER; T_READER="${T_READER:-*-*-* 01:15:00 UTC}"
+read -rp "阅读时间 OnCalendar [*-*-* 02:00:00 UTC]: " T_READER; T_READER="${T_READER:-*-*-* 02:00:00 UTC}"
 
 # 环境变量：V2EX_PROFILE（非 default 才注入）
 PROFILE_ENV=""
@@ -175,7 +176,7 @@ RDR_DIR="${PROJ_ROOT}/reader"
 # 签到
 write_oneshot_service "$UNIT_CHECKIN" "V2EX 每日签到 (${PROFILE})" \
   "$CHK_DIR" "${NODE_BIN} v2ex-checkin.js"
-write_timer "$UNIT_CHECKIN" "V2EX 每日签到定时器 (${PROFILE})" "$T_CHECKIN" 600
+write_timer "$UNIT_CHECKIN" "V2EX 每日签到定时器 (${PROFILE})" "$T_CHECKIN" 1800
 
 # 保活
 write_oneshot_service "$UNIT_PING" "V2EX 保活心跳 (${PROFILE})" \
@@ -186,7 +187,7 @@ write_timer "$UNIT_PING" "V2EX 保活定时器 (${PROFILE})" "$T_PING" 300
 if [[ $INSTALL_READER -eq 1 ]]; then
   write_oneshot_service "$UNIT_READER" "V2EX 自动阅读 (${PROFILE})" \
     "$RDR_DIR" "${XVFB_PREFIX}${NODE_BIN} main.js" "TimeoutStartSec=6h"
-  write_timer "$UNIT_READER" "V2EX 自动阅读定时器 (${PROFILE})" "$T_READER" 900
+  write_timer "$UNIT_READER" "V2EX 自动阅读定时器 (${PROFILE})" "$T_READER" 1800
 fi
 
 # Bot（常驻）

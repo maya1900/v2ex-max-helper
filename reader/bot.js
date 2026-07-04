@@ -654,27 +654,62 @@ function runScript(name, command, args, cwd) {
   });
 }
 
+const DAILY_TASK_START_UTC_HOUR = 2; // 北京时间 10:00
+const DAILY_TASK_WINDOW_MINUTES = 30;
+const READ_DELAY_AFTER_CHECKIN_MINUTES = 5;
+
+function utcDayKey(now) {
+  return Math.floor(now.getTime() / 86400000);
+}
+
+function randomIntInclusive(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function formatUtcMinute(hour, minute) {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} UTC`;
+}
+
 function startScheduler() {
-  // 用 day-of-year 防止同一天重复执行
-  let lastCheckinDOY = -1;
-  let lastReadDOY = -1;
+  let lastCheckinDay = -1;
+  let lastReadDay = -1;
+  let scheduleDay = -1;
+  let checkinMinute = 0;
+  let readMinute = READ_DELAY_AFTER_CHECKIN_MINUTES;
+
+  function ensureDailySchedule(now) {
+    const day = utcDayKey(now);
+    if (day === scheduleDay) return;
+
+    scheduleDay = day;
+    checkinMinute = randomIntInclusive(
+      0,
+      DAILY_TASK_WINDOW_MINUTES - READ_DELAY_AFTER_CHECKIN_MINUTES
+    );
+    readMinute = checkinMinute + READ_DELAY_AFTER_CHECKIN_MINUTES;
+    console.log(
+      `[调度器] 今日每日任务窗口：签到 ${formatUtcMinute(DAILY_TASK_START_UTC_HOUR, checkinMinute)}，` +
+      `阅读 ${formatUtcMinute(DAILY_TASK_START_UTC_HOUR, readMinute)}`
+    );
+  }
 
   setInterval(() => {
     const now = new Date();
     const h = now.getUTCHours();
     const m = now.getUTCMinutes();
-    // day-of-year 唯一标识每天
-    const doy = Math.floor((now - new Date(now.getUTCFullYear(), 0, 0)) / 86400000);
+    const day = utcDayKey(now);
 
-    // 每天 UTC 01:10 签到（当天只执行一次）
-    if (h === 1 && m === 10 && doy !== lastCheckinDOY) {
-      lastCheckinDOY = doy;
+    ensureDailySchedule(now);
+
+    // 每天北京时间 10:00-10:30 随机窗口内签到（UTC 02:00-02:30）
+    if (h === DAILY_TASK_START_UTC_HOUR && m === checkinMinute && day !== lastCheckinDay) {
+      lastCheckinDay = day;
       runScript('签到', process.execPath, ['../checkin/v2ex-checkin.js'], __dirname);
     }
 
-    // 每天 UTC 01:15 阅读（当天只执行一次）
-    if (h === 1 && m === 15 && doy !== lastReadDOY) {
-      lastReadDOY = doy;
+    // 阅读安排在签到后 5 分钟，仍保持在北京时间 10:00-10:30 随机窗口内
+    if (h === DAILY_TASK_START_UTC_HOUR && m === readMinute && day !== lastReadDay) {
+      lastReadDay = day;
       // Render 环境下直接 node，VPS Docker 里可以用 xvfb-run
       runScript('阅读', process.execPath, ['main.js'], __dirname);
     }
@@ -685,7 +720,7 @@ function startScheduler() {
     }
   }, 60 * 1000); // 每分钟检查一次
 
-  console.log('[调度器] 内置定时任务已启动 (UTC 时钟)');
+  console.log('[调度器] 内置定时任务已启动 (UTC 时钟，每日任务北京时间 10:00-10:30 随机)');
 }
 
 // ========== 铁墙 HTTP 服务器（满足 Render 端口要求 + 防扫描）==========

@@ -2,8 +2,11 @@
 // ========== 帖子 URL 多源抓取 ==========
 const https  = require('https');
 const logger = require('./logger');
+const fingerprint = require('./fingerprint');
 
 const HOST = 'www.v2ex.com';
+const PROFILE = (process.env.V2EX_PROFILE || 'default').trim() || 'default';
+const FP = fingerprint.generate(PROFILE);
 
 // 多源配置
 const SOURCES = [
@@ -26,10 +29,13 @@ const RECENT_PAGES = [
 
 const COMMON_HEADERS = {
   'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-  'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept-Language': FP.acceptLanguage,
+  'User-Agent':      FP.userAgent,
   'Referer':         'https://www.v2ex.com/',
 };
+
+const FETCH_SLEEP_MIN = intEnv('FETCH_SLEEP_MIN', 1500);
+const FETCH_SLEEP_MAX = Math.max(FETCH_SLEEP_MIN, intEnv('FETCH_SLEEP_MAX', 5000));
 
 function fetchPage(reqPath, cookie) {
   return new Promise((resolve, reject) => {
@@ -83,26 +89,26 @@ async function fetchAll(cookie) {
   const allUrls = [];
 
   // 多页 /recent
-  for (const p of RECENT_PAGES) {
+  for (const p of shuffle(RECENT_PAGES)) {
     try {
       const html = await fetchPage(p, cookie);
       const urls = extractPostUrls(html);
       logger.info(`Fetcher ${p}: ${urls.length} posts`);
       allUrls.push(...urls);
-      await sleep(2000);
+      await sleep(randomFetchSleepMs());
     } catch (e) {
       logger.warn(`Fetcher ${p} failed: ${e.message}`);
     }
   }
 
   // 其他来源
-  for (const src of SOURCES) {
+  for (const src of shuffle(SOURCES)) {
     try {
       const html = await fetchPage(src.path, cookie);
       const urls = extractPostUrls(html);
       logger.info(`Fetcher ${src.name} (${src.path}): ${urls.length} posts`);
       allUrls.push(...urls);
-      await sleep(2000);
+      await sleep(randomFetchSleepMs());
     } catch (e) {
       logger.warn(`Fetcher ${src.name} failed: ${e.message}`);
     }
@@ -121,5 +127,27 @@ async function fetchAllForce(cookie) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function intEnv(name, def) {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v >= 0 ? v : def;
+}
+
+function randInt(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function randomFetchSleepMs() {
+  return randInt(FETCH_SLEEP_MIN, FETCH_SLEEP_MAX);
+}
+
+function shuffle(items) {
+  const arr = items.slice();
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = randInt(0, i);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
 
 module.exports = { fetchAll, fetchAllForce };
