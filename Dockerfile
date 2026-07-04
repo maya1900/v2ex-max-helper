@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Playwright 自带 Chromium，安装到项目内（容器持久路径）
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/ms-playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
 
 # 复制依赖定义并安装。仓库不强制提交 package-lock，因此这里使用 npm install。
 COPY checkin/package*.json ./checkin/
