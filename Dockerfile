@@ -51,6 +51,7 @@ RUN chmod +x ./entrypoint.sh
 
 # 创建非 root 用户（安全）
 RUN groupadd -r v2ex && useradd -r -g v2ex -d /app v2ex \
+    && mkdir -p /app/data \
     && chown -R v2ex:v2ex /app
 
 USER v2ex
