@@ -97,10 +97,11 @@ async function notifySessionExpired() {
 }
 
 // 余额变化（活跃度奖励）
-async function notifyBalanceChanged(from, to, count) {
+async function notifyBalanceChanged(fromText, toText, count, deltaText = '') {
+  const delta = deltaText ? ` (${deltaText})` : '';
   await sendMessage(
     `💰 <b>V2EX 活跃度奖励</b>\n` +
-    `铜币: ${from} → ${to} (+${to - from})\n` +
+    `余额: ${fromText} → ${toText}${delta}\n` +
     `今日第 ${count} 次奖励`
   );
 }

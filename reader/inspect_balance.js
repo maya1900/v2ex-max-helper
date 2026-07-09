@@ -1,6 +1,6 @@
 'use strict';
 // 调试工具：抓取 /balance 页面，打印活跃度/奖励相关的 HTML 片段
-// 用于排查铜币解析正则是否匹配，正常运行不需要它。
+// 用于排查余额解析正则是否匹配，正常运行不需要它。
 const fs    = require('fs');
 const os    = require('os');
 const path  = require('path');

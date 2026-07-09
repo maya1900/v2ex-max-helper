@@ -132,10 +132,32 @@ function statusForIssue(issue, resp, extra = {}) {
   };
 }
 
-// 解析铜币数量（整数，用于 baseline）
-function parseCopperCoins(html) {
-  const balance = parseBalance(html);
-  return balance ? balance.copper : null;
+const COPPER_PER_SILVER = 100;
+const COPPER_PER_GOLD = COPPER_PER_SILVER * 100;
+
+function balanceToCopper(balance) {
+  if (!balance) return null;
+  return (Number(balance.gold) || 0) * COPPER_PER_GOLD
+    + (Number(balance.silver) || 0) * COPPER_PER_SILVER
+    + (Number(balance.copper) || 0);
+}
+
+function formatBalanceAmount(balance) {
+  if (!balance) return '0 铜币';
+  const parts = [];
+  if (balance.gold) parts.push(`${balance.gold} 金币`);
+  if (balance.silver) parts.push(`${balance.silver} 银币`);
+  if (balance.copper || parts.length === 0) parts.push(`${balance.copper || 0} 铜币`);
+  return parts.join(' ');
+}
+
+function formatCopperDelta(delta) {
+  const sign = delta > 0 ? '+' : delta < 0 ? '-' : '';
+  const abs = Math.abs(delta);
+  const gold = Math.floor(abs / COPPER_PER_GOLD);
+  const silver = Math.floor((abs % COPPER_PER_GOLD) / COPPER_PER_SILVER);
+  const copper = abs % COPPER_PER_SILVER;
+  return `${sign}${formatBalanceAmount({ gold, silver, copper })}`;
 }
 
 // 解析所有硬币（金、银、铜）
@@ -154,11 +176,12 @@ function parseBalance(html) {
     else if (coin === 'S') silver = val;
     else if (coin === 'B') copper = val;
   }
-  return { gold, silver, copper };
+  const balance = { gold, silver, copper };
+  return { ...balance, total: balanceToCopper(balance) };
 }
 
 // 状态
-let baseline    = null;   // 基线铜币值
+let baseline    = null;   // 基线余额
 let changeCount = 0;      // 余额变化次数
 
 // 写余额日志（供 /sou 命令使用，不做实时查询）
@@ -181,6 +204,7 @@ function saveBalanceLog(html) {
       gold: balance.gold,
       silver: balance.silver,
       copper: balance.copper,
+      total: balance.total,
       lastTime: new Date().toISOString()
     };
     fs.writeFileSync(BALANCE_LOG, JSON.stringify(log, null, 2));
@@ -199,16 +223,16 @@ async function init(cookie) {
       return { ok: false, fatal: issue.code === 'logged_out', code: issue.code, message: issue.message };
     }
 
-    const copper = parseCopperCoins(resp.body);
-    if (copper === null) {
-      const parseIssue = { code: 'parse_failed', message: '余额页已返回，但未找到铜币区域，页面结构可能变化' };
+    const current = parseBalance(resp.body);
+    if (!current) {
+      const parseIssue = { code: 'parse_failed', message: '余额页已返回，但未找到余额区域，页面结构可能变化' };
       logger.warn(`Balance: ${parseIssue.message}`);
       writeBalanceStatus(statusForIssue(parseIssue, resp));
       return { ok: false, fatal: false, code: parseIssue.code, message: parseIssue.message };
     }
-    baseline    = copper;
+    baseline    = current;
     changeCount = 0;
-    logger.info(`Balance baseline: ${copper} 铜币`);
+    logger.info(`Balance baseline: ${formatBalanceAmount(current)}（总计 ${current.total} 铜币等值）`);
     saveBalanceLog(resp.body);
     writeBalanceStatus({
       ok: true,
@@ -216,9 +240,12 @@ async function init(cookie) {
       message: '余额读取成功',
       statusCode: resp.statusCode,
       finalUrl: resp.finalUrl,
-      copper,
+      gold: current.gold,
+      silver: current.silver,
+      copper: current.copper,
+      total: current.total,
     });
-    return { ok: true, fatal: false, code: 'ok', message: '余额读取成功', copper };
+    return { ok: true, fatal: false, code: 'ok', message: '余额读取成功', balance: current };
   } catch (e) {
     logger.error(`Balance init failed: ${e.message}`);
     writeBalanceStatus({ ok: false, code: 'network_error', message: e.message });
@@ -237,9 +264,9 @@ async function check(cookie) {
       return changeCount;
     }
 
-    const copper = parseCopperCoins(resp.body);
-    if (copper === null) {
-      const parseIssue = { code: 'parse_failed', message: '余额页已返回，但未找到铜币区域，页面结构可能变化' };
+    const current = parseBalance(resp.body);
+    if (!current) {
+      const parseIssue = { code: 'parse_failed', message: '余额页已返回，但未找到余额区域，页面结构可能变化' };
       logger.warn(`Balance: ${parseIssue.message}`);
       writeBalanceStatus(statusForIssue(parseIssue, resp));
       return changeCount;
@@ -252,22 +279,34 @@ async function check(cookie) {
       message: '余额读取成功',
       statusCode: resp.statusCode,
       finalUrl: resp.finalUrl,
-      copper,
+      gold: current.gold,
+      silver: current.silver,
+      copper: current.copper,
+      total: current.total,
     });
 
     if (baseline === null) {
-      baseline = copper;
-      logger.info(`Balance baseline restored: ${copper} 铜币`);
+      baseline = current;
+      logger.info(`Balance baseline restored: ${formatBalanceAmount(current)}（总计 ${current.total} 铜币等值）`);
       return changeCount;
     }
 
-    if (copper !== baseline) {
+    if (current.total > baseline.total) {
+      const delta = current.total - baseline.total;
       changeCount++;
-      logger.ok(`Balance changed! ${baseline} → ${copper} 铜币 (变化第 ${changeCount} 次)`);
-      await notify.notifyBalanceChanged(baseline, copper, changeCount);
-      baseline = copper;
+      logger.ok(`Balance increased! ${formatBalanceAmount(baseline)} → ${formatBalanceAmount(current)} (${formatCopperDelta(delta)}, 奖励第 ${changeCount} 次)`);
+      await notify.notifyBalanceChanged(
+        formatBalanceAmount(baseline),
+        formatBalanceAmount(current),
+        changeCount,
+        formatCopperDelta(delta)
+      );
+      baseline = current;
+    } else if (current.total < baseline.total) {
+      logger.warn(`Balance decreased: ${formatBalanceAmount(baseline)} → ${formatBalanceAmount(current)} (${formatCopperDelta(current.total - baseline.total)}), not counted as activity reward`);
+      baseline = current;
     } else {
-      logger.info(`Balance check: ${copper} 铜币（无变化，已触发 ${changeCount} 次）`);
+      logger.info(`Balance check: ${formatBalanceAmount(current)}（无变化，已触发 ${changeCount} 次）`);
     }
     return changeCount;
   } catch (e) {
@@ -286,5 +325,8 @@ module.exports = {
   getLastStatus,
   fetchBalance,
   parseBalance,
+  balanceToCopper,
+  formatBalanceAmount,
+  formatCopperDelta,
   diagnoseResponse,
 };

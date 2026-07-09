@@ -583,20 +583,26 @@ async function handleCookieImport(text) {
 
 let runningTask = null; // 防止任务重叠
 
-function runScript(name, command, args, cwd) {
+function runScript(name, command, args, cwd, options = {}) {
   if (runningTask) {
-    console.log(`[调度器] 跳过 ${name}，上一个任务 ${runningTask} 还在运行`);
-    return;
+    const reason = `上一个任务 ${runningTask} 还在运行`;
+    console.log(`[调度器] 跳过 ${name}，${reason}`);
+    if (options.onSkip) Promise.resolve(options.onSkip(reason)).catch(() => {});
+    return false;
   }
 
   // 检查 Cookie 文件是否存在（无 cookie 时跳过，不崩溃）
   if (!fs.existsSync(COOKIE_FILE)) {
-    console.log(`[调度器] 跳过 ${name}，Cookie 文件不存在，请先通过 TG 导入`);
-    return;
+    const reason = 'Cookie 文件不存在，请先通过 TG 导入';
+    console.log(`[调度器] 跳过 ${name}，${reason}`);
+    if (options.onSkip) Promise.resolve(options.onSkip(reason)).catch(() => {});
+    return false;
   }
 
   console.log(`[调度器] 启动 ${name}`);
   runningTask = name;
+  let stdout = '';
+  let stderr = '';
 
   const child = spawn(command, args, {
     cwd,
@@ -606,6 +612,7 @@ function runScript(name, command, args, cwd) {
 
   child.stdout.on('data', d => {
     const dataStr = d.toString();
+    if (options.captureOutput) stdout += dataStr;
     const lines = dataStr.split('\n');
     for (let line of lines) {
       line = line.trim();
@@ -625,6 +632,7 @@ function runScript(name, command, args, cwd) {
   });
   child.stderr.on('data', d => {
     const dataStr = d.toString();
+    if (options.captureOutput) stderr += dataStr;
     const lines = dataStr.split('\n');
     for (let line of lines) {
       line = line.trim();
@@ -646,12 +654,93 @@ function runScript(name, command, args, cwd) {
   child.on('close', (code) => {
     console.log(`[调度器] ${name} 退出 (code ${code})`);
     runningTask = null;
+    if (options.onClose) {
+      Promise.resolve(options.onClose(code, { stdout, stderr })).catch((e) => {
+        console.error(`[调度器] ${name} 完成回调失败: ${e.message}`);
+      });
+    }
   });
 
   child.on('error', (err) => {
     console.error(`[调度器] ${name} 启动失败: ${err.message}`);
     runningTask = null;
+    if (options.onError) Promise.resolve(options.onError(err)).catch(() => {});
   });
+
+  return true;
+}
+
+function getPanelBackKeyboard() {
+  return {
+    inline_keyboard: [[{ text: '◀️ 返回面板', callback_data: 'go_to_start' }]]
+  };
+}
+
+function parseScriptFields(output) {
+  const fields = {};
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.trim();
+    const match = line.match(/^(.+?)\s*:\s*(.*)$/);
+    if (!match) continue;
+    fields[match[1].trim()] = match[2].trim();
+  }
+  return fields;
+}
+
+function getLastOutputLines(output, maxLines = 6) {
+  return output
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .slice(-maxLines)
+    .join('\n');
+}
+
+function formatCheckinRunResult(code, output) {
+  const fields = parseScriptFields(output);
+  const resultMatch = output.match(/🎯 Result\s*:\s*(.+)/);
+  const status = fields.Status || (resultMatch && resultMatch[1].trim()) || (code === 0 ? '已完成' : '执行失败');
+  const title = code === 0
+    ? '✅ <b>V2EX 手动签到完成</b>'
+    : '❌ <b>V2EX 手动签到失败</b>';
+
+  const lines = [
+    title,
+    `状态：${escapeHtml(status)}`,
+  ];
+
+  if (fields['Days left']) lines.push(`连续签到：${escapeHtml(fields['Days left'])}`);
+  if (fields.Balance) lines.push(`余额：${escapeHtml(fields.Balance)}`);
+  if (code !== 0) lines.push(`退出码：<code>${code}</code>`);
+
+  const tail = getLastOutputLines(output);
+  if (code !== 0 && tail) {
+    lines.push('');
+    lines.push(`<pre>${escapeHtml(tail).slice(0, 1200)}</pre>`);
+  }
+
+  return lines.join('\n');
+}
+
+async function handleManualCheckin(messageId = null) {
+  const reply = (text) => messageId
+    ? editMsgText(messageId, text, getPanelBackKeyboard())
+    : sendMsg(text);
+
+  const started = runScript('手动签到', process.execPath, ['../checkin/v2ex-checkin.js'], __dirname, {
+    captureOutput: true,
+    onSkip: async (reason) => {
+      await reply(`⚠️ <b>手动签到未启动</b>\n${escapeHtml(reason)}`);
+    },
+    onError: async (err) => {
+      await reply(`❌ <b>手动签到启动失败</b>\n${escapeHtml(err.message)}`);
+    },
+    onClose: async (code, { stdout, stderr }) => {
+      await reply(formatCheckinRunResult(code, `${stdout}\n${stderr}`));
+    },
+  });
+
+  return started;
 }
 
 const DAILY_TASK_START_UTC_HOUR = 2; // 北京时间 10:00
@@ -809,7 +898,7 @@ async function handleMessage(msg) {
   }
   else if (cmd === '/checkin') {
     await sendMsg('⏳ 正在启动手动签到...');
-    runScript('手动签到', process.execPath, ['../checkin/v2ex-checkin.js'], __dirname);
+    await handleManualCheckin();
   }
   else if (cmd === '/read') {
     await handleRead(arg);
@@ -849,7 +938,7 @@ async function handleCallbackQuery(query) {
   try {
     if (data === 'run_checkin') {
       await editMsgText(messageId, '⏳ 正在启动手动签到...');
-      runScript('手动签到', process.execPath, ['../checkin/v2ex-checkin.js'], __dirname);
+      await handleManualCheckin(messageId);
     }
     else if (data === 'run_read_panel') {
       await handleRead(null, messageId);
